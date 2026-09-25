@@ -1,0 +1,33 @@
+{
+  "injuries": {
+    "week": "3",
+    "timestamp": "1789000000",
+    "injury": [
+      {
+        "player_id": "0011",
+        "status": "IR",
+        "details": "Ankle"
+      },
+      {
+        "player_id": "0003",
+        "status": "Questionable",
+        "details": "Hamstring"
+      },
+      {
+        "player_id": "0023",
+        "status": "Out",
+        "details": "ACL"
+      },
+      {
+        "player_id": "0006",
+        "status": "Out",
+        "details": "Concussion"
+      },
+      {
+        "player_id": "0020",
+        "status": "Questionable",
+        "details": "Calf"
+      }
+    ]
+  }
+}

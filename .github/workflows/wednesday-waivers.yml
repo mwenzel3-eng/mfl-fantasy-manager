@@ -1,0 +1,52 @@
+name: Wednesday waivers
+
+on:
+  schedule:
+    # 6:00 PM America/Phoenix (Arizona has no DST, so this is UTC-7 year round).
+    # Waivers clear overnight; this is the last chance to add before lineups lock.
+    - cron: "0 18 * * 3"
+      timezone: "America/Phoenix"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Force a report-only run for this invocation"
+        type: boolean
+        default: true
+
+concurrency:
+  group: wednesday-waivers
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  waivers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run waiver job
+        env:
+          MFL_LEAGUE_ID: ${{ secrets.MFL_LEAGUE_ID }}
+          MFL_YEAR: ${{ vars.MFL_YEAR }}
+          MFL_APIKEY: ${{ secrets.MFL_APIKEY }}
+          MFL_USERNAME: ${{ secrets.MFL_USERNAME }}
+          MFL_PASSWORD: ${{ secrets.MFL_PASSWORD }}
+          MFL_DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '1' || vars.MFL_DRY_RUN }}
+          MFL_ENABLE_WRITES: ${{ vars.MFL_ENABLE_WRITES }}
+          SMS_PROVIDER: ${{ vars.SMS_PROVIDER }}
+          TWILIO_SID: ${{ secrets.TWILIO_SID }}
+          TWILIO_TOKEN: ${{ secrets.TWILIO_TOKEN }}
+          TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
+          SMS_TO: ${{ secrets.SMS_TO }}
+        run: python -m mcp_server.cli waivers

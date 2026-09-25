@@ -1,0 +1,83 @@
+{
+  "rosters": {
+    "franchise": [
+      {
+        "id": "0001",
+        "franchise_name": "Team One",
+        "roster": {
+          "player": [
+            {
+              "id": "0001",
+              "status": "S"
+            },
+            {
+              "id": "0010",
+              "status": "S"
+            },
+            {
+              "id": "0002",
+              "status": "S"
+            },
+            {
+              "id": "0003",
+              "status": "S"
+            },
+            {
+              "id": "0004",
+              "status": "S"
+            },
+            {
+              "id": "0005",
+              "status": "S"
+            },
+            {
+              "id": "0006",
+              "status": "R"
+            },
+            {
+              "id": "0007",
+              "status": "R"
+            },
+            {
+              "id": "0008",
+              "status": "R"
+            },
+            {
+              "id": "0009",
+              "status": "R"
+            },
+            {
+              "id": "0011",
+              "status": "IR",
+              "salary": "5"
+            },
+            {
+              "id": "0012",
+              "status": "TS"
+            },
+            {
+              "id": "0030",
+              "status": "R"
+            },
+            {
+              "id": "0031",
+              "status": "S"
+            }
+          ]
+        }
+      },
+      {
+        "id": "0002",
+        "franchise_name": "Team Two",
+        "roster": {
+          "player": [
+            {
+              "id": "0099",
+              "status": "S"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

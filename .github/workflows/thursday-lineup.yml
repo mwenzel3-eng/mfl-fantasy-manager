@@ -1,0 +1,65 @@
+name: Thursday lineup
+
+on:
+  schedule:
+    # 2:00 PM America/Phoenix. Late enough for Thursday morning injury news,
+    # early enough to still change the lineup before it locks.
+    - cron: "0 14 * * 4"
+      timezone: "America/Phoenix"
+  workflow_dispatch:
+    inputs:
+      week:
+        description: "Week number to set the lineup for (blank = current lineup week)"
+        type: string
+        default: ""
+      force:
+        description: "Submit even if the projected gain is below the safety threshold"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Force a report-only run for this invocation"
+        type: boolean
+        default: true
+
+concurrency:
+  group: thursday-lineup
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  lineup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lineup job
+        env:
+          MFL_LEAGUE_ID: ${{ secrets.MFL_LEAGUE_ID }}
+          MFL_YEAR: ${{ vars.MFL_YEAR }}
+          MFL_APIKEY: ${{ secrets.MFL_APIKEY }}
+          MFL_USERNAME: ${{ secrets.MFL_USERNAME }}
+          MFL_PASSWORD: ${{ secrets.MFL_PASSWORD }}
+          MFL_DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '1' || vars.MFL_DRY_RUN }}
+          MFL_ENABLE_WRITES: ${{ vars.MFL_ENABLE_WRITES }}
+          SMS_PROVIDER: ${{ vars.SMS_PROVIDER }}
+          TWILIO_SID: ${{ secrets.TWILIO_SID }}
+          TWILIO_TOKEN: ${{ secrets.TWILIO_TOKEN }}
+          TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
+          SMS_TO: ${{ secrets.SMS_TO }}
+        run: |
+          args=""
+          [ -n "${{ inputs.week }}" ] && args="--week ${{ inputs.week }}"
+          [ "${{ inputs.force }}" = "true" ] && args="$args --force"
+          # shellcheck disable=SC2086
+          python -m mcp_server.cli lineup $args

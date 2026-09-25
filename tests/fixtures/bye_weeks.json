@@ -1,0 +1,14 @@
+{
+  "nflByeWeeks": {
+    "bye": [
+      {
+        "team": "NE",
+        "bye": 5
+      },
+      {
+        "team": "BUF",
+        "bye": 6
+      }
+    ]
+  }
+}

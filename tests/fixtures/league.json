@@ -1,0 +1,22 @@
+{
+  "league": {
+    "name": "Test League",
+    "seasonYear": "2026",
+    "host": "www99.myfantasyleague.com",
+    "currentWeek": 3,
+    "lastWeek": 2,
+    "finalWeek": 17,
+    "roster_positions": "QB,2,RB,3,WR,4,TE,1,K,1,DEF,2",
+    "roster_limits": "QB,2,RB,4,WR,5,TE,2,K,1,DEF,2",
+    "starters": "QB,1,RB,2,WR,3,FLX,1",
+    "divisions": false,
+    "franchise": {"id": "0001", "name": "Team One", "ir": 3, "taxi_squad": 2},
+    "franchises": {
+      "franchise": [
+        {"id": "0001", "name": "Team One", "owner_name": "Owner One"},
+        {"id": "0002", "name": "Team Two", "owner_name": "Owner Two"}
+      ]
+    },
+    "user": {"username": "testuser", "franchise_id": "0001"}
+  }
+}

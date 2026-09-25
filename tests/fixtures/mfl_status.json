@@ -1,0 +1,14 @@
+{
+  "mfl_status": {
+    "weeks": {
+      "LiveScoringWeek": "3",
+      "CompletedWeek": "2",
+      "CurrentWeek": "3",
+      "UpcomingWeek": "4",
+      "LineupWeek": "4"
+    },
+    "year": "2026"
+  },
+  "encoding": "utf-8",
+  "version": "1.0"
+}
