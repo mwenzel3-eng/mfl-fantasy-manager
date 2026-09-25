@@ -210,9 +210,25 @@ reached and refused the credentials. If you have 2FA or a secondary password
 configured on your MFL account, the API login needs the app-specific password
 from MFL's account settings, not your normal one.
 
-**`MFL rate limit hit (HTTP 429)`** — expected when the API has not yet registered
-your client. MFL throttles unregistered clients harder than documented. Register at
-their API Client Registration page, or raise `MFL_REQUEST_DELAY`.
+**`MFL rate limit hit (HTTP 429)`** — MFL throttles by sampling your requests, so a
+429 means you are over a limit that is not published and varies by time of day and
+site traffic. Three things help, in order of effect:
+
+1. **Register the client**, which MFL says buys roughly 2.5x the limit. Register at
+   `https://wwwNN.myfantasyleague.com/<year>/csetup?C=APICLI` (from your league's
+   host), then validate the code they text to your phone. The catch: the
+   `User-Agent` you register **must match** what the client sends, or registration
+   does not apply. The default is `mfl-fantasy-manager/0.1.0
+   (+https://github.com/mwenzel3-eng/mfl-fantasy-manager)`; override with
+   `MFL_USER_AGENT` if you register a different string.
+2. **Space requests out.** One per second is the figure MFL quotes, and this
+   client defaults to exactly that.
+3. **Do not retry.** MFL is explicit that retrying a failed request makes
+   throttling worse. This client treats 429 as fatal and tells you to wait.
+
+Note that limits are per-IP *and* per-server, so league-specific requests pinned to
+your league's `wwwNN` host have less headroom than the same request sent to
+`api.myfantasyleague.com`.
 
 ## Limitations
 
