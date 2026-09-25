@@ -127,12 +127,18 @@ class MFLClient:
         return f"https://{host}/{self.settings.year}/{command}"
 
     def _auth(self, params: dict[str, Any], *, cookie_ok: bool) -> dict[str, Any]:
-        """Attach credentials. APIKEY wins over the cookie, per MFL docs."""
-        if self.settings.apikey:
-            params["APIKEY"] = self.settings.apikey
-            return params
+        """Attach credentials to a query.
+
+        The cookie takes precedence whenever one exists, because MFL's API key
+        is export-only: sending ``APIKEY`` on an import makes MFL ignore the
+        session and reject the write. A key is therefore attached only to a
+        request that cannot use a cookie, or has none yet.
+        """
         if cookie_ok and self._cookie:
             params["_cookie"] = self._cookie
+            return params
+        if self.settings.apikey:
+            params["APIKEY"] = self.settings.apikey
         return params
 
     async def _throttle(self) -> None:
@@ -144,13 +150,35 @@ class MFLClient:
             await self._sleep(gap - elapsed)
         self._last_request = self._monotonic()
 
+    async def _ensure_authenticated(self, *, required: bool) -> None:
+        """Obtain a session cookie when one is needed but absent.
+
+        Two situations need this. A configuration that supplies only
+        ``MFL_USERNAME``/``MFL_PASSWORD`` would otherwise send every read
+        completely unauthenticated, because no cookie exists until someone logs
+        in. And an import always needs the cookie, since ``APIKEY`` is
+        export-only, even when an API key is also configured.
+
+        An export with a usable API key is left alone: logging in there would
+        spend a request to obtain a credential the request does not need.
+        """
+        if self._cookie or not self.settings.has_cookie_auth:
+            return
+        if not required and self.settings.has_apikey_auth:
+            return
+        await self.login()
+
     async def _send(
         self,
         command: str,
         params: Mapping[str, Any] | None = None,
         *,
         cookie_ok: bool = True,
+        require_cookie: bool = False,
     ) -> dict[str, Any]:
+        if cookie_ok:
+            await self._ensure_authenticated(required=require_cookie)
+
         query: dict[str, Any] = {"JSON": 1}
         for key, value in (params or {}).items():
             if value is None:
@@ -160,21 +188,17 @@ class MFLClient:
         cookie = self._cookie
         query = self._auth(query, cookie_ok=cookie_ok)
         url = self._base_url(command)
+        sendable = {k: v for k, v in query.items() if not k.startswith("_")}
 
         await self._throttle()
         http = self._http()
         try:
             if cookie and "APIKEY" not in query:
                 response = await http.get(
-                    url,
-                    params={k: v for k, v in query.items() if not k.startswith("_")},
-                    headers={"Cookie": f"MFL_USER_ID={cookie}"},
+                    url, params=sendable, headers={"Cookie": f"MFL_USER_ID={cookie}"}
                 )
             else:
-                response = await http.get(
-                    url,
-                    params={k: v for k, v in query.items() if not k.startswith("_")},
-                )
+                response = await http.get(url, params=sendable)
         except httpx.HTTPError as exc:
             raise MFLError(f"Request to {url} failed: {exc}") from exc
 
@@ -196,8 +220,7 @@ class MFLClient:
         except json.JSONDecodeError as exc:
             raise MFLError(f"Non-JSON response from MFL for {url}") from exc
         if isinstance(payload, dict) and "error" in payload:
-            error = payload["error"]
-            raise MFLError(f"MFL error: {error}")
+            raise MFLError(f"MFL error: {_error_text(payload['error'])}")
         return payload if isinstance(payload, dict) else {"response": payload}
 
     async def export(self, request_type: str, **params: Any) -> dict[str, Any]:
@@ -210,7 +233,9 @@ class MFLClient:
         """Call ``import?TYPE=<request_type>``, gated by the write switch."""
         self.settings.require_writes()
         params.setdefault("L", self.settings.league_id)
-        return await self._send("import", {"TYPE": request_type, **params})
+        return await self._send(
+            "import", {"TYPE": request_type, **params}, require_cookie=True
+        )
 
     # -- auth --------------------------------------------------------------
 
@@ -261,33 +286,36 @@ class MFLClient:
         return cookie
 
     async def ensure_league_host(self) -> str:
-        """Resolve and cache the league's own ``wwwXX`` host.
+        """Resolve and cache the league's own ``wwwNN`` host.
 
         Sending league requests to the wrong host works but can be slow or
-        rejected under load, so we resolve it once.
+        rejected under load, so we resolve it once. The request goes out on the
+        api host (we have no league host yet) and MFL redirects as needed.
+
+        Credentials are attached by :meth:`_send`, so this works with either an
+        API key or a login cookie.
         """
         if self._resolved_host:
             return self._resolved_host
         self.settings.require_read()
-        url = f"https://{API_HOST}/{self.settings.year}/export"
-        query: dict[str, Any] = {
-            "TYPE": "league",
-            "L": self.settings.league_id,
-            "JSON": 1,
-        }
-        if self.settings.apikey:
-            query["APIKEY"] = self.settings.apikey
-        await self._throttle()
-        response = await self._http().get(url, params=query)
-        if response.status_code >= 400:
-            raise MFLError(f"Could not resolve league host (HTTP {response.status_code})")
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise MFLError("Non-JSON response while resolving league host") from exc
-        host = as_str(payload.get("league", {}).get("host"))
+
+        payload = await self._send("export", {"TYPE": "league", "L": self.settings.league_id})
+        league = payload.get("league")
+        if not isinstance(league, dict):
+            raise MFLError(
+                "League export returned no 'league' object for "
+                f"L={self.settings.league_id}; keys were {sorted(payload)}. "
+                "Check that MFL_LEAGUE_ID is correct and that these credentials "
+                "belong to that league."
+            )
+        host = as_str(league.get("host"))
         if not host:
-            raise MFLError("League export did not include a host")
+            raise MFLError(
+                f"League export for L={self.settings.league_id} contained no host "
+                f"(name={as_str(league.get('name')) or 'unknown'!r}). This usually "
+                "means the league id is wrong, or the APIKEY belongs to a "
+                "different league than MFL_LEAGUE_ID."
+            )
         self._resolved_host = host.lower()
         return self._resolved_host
 
@@ -727,16 +755,46 @@ class MFLClient:
             pass
 
 
+def _error_text(error: Any) -> str:
+    """Render MFL's error payload, which is usually ``{"$t": "message"}``.
+
+    MFL signals failures with HTTP 200 and an ``error`` key, so these show up
+    as ordinary responses and are the single most common cause of a confusing
+    failure. Flatten the XML-converted shape into something readable.
+    """
+    if isinstance(error, dict):
+        parts = [as_str(v) for v in error.values() if as_str(v)]
+        if parts:
+            return "; ".join(parts)
+    if isinstance(error, list):
+        return "; ".join(_error_text(item) for item in error)
+    text = as_str(error)
+    return text or repr(error)
+
+
 def _extract_cookie(login_body: str) -> str | None:
-    """Pull the cookie name/value pair out of the login response body."""
+    """Pull the cookie value out of the login response body.
+
+    MFL answers a successful login with XML like::
+
+        <status cookie_name="MFL_USER_ID" cookie_value="eyJ0eXAi...">MFL</status>
+
+    The two attributes are matched independently rather than as one ordered
+    pair, because attribute order in a response is not a contract worth
+    depending on, and a mismatch here fails as a confusing "login succeeded
+    but no cookie".
+    """
     import re
 
-    match = re.search(
-        r'<status\s+cookie_name\s*=\s*"([^"]+)"\s+cookie_value\s*=\s*"([^"]+)"',
-        login_body,
-    )
-    if match and match.group(1):
-        return match.group(2)
+    if not login_body:
+        return None
+    name = re.search(r"""cookie_name\s*=\s*["']([^"']*)["']""", login_body, re.I)
+    value = re.search(r"""cookie_value\s*=\s*["']([^"']*)["']""", login_body, re.I)
+    if value and value.group(1):
+        # A present but empty cookie_name would mean something unexpected.
+        if name and name.group(1) and name.group(1).upper() != "MFL_USER_ID":
+            log.debug("Unexpected MFL cookie name %r", name.group(1))
+        return value.group(1)
     return None
 
 

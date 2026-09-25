@@ -53,7 +53,7 @@ async def test_export_targets_league_host_and_injects_credentials(settings: Sett
     assert url.params["TYPE"] == "league"
     assert url.params["L"] == "99999"
     assert url.params["JSON"] == "1"
-    # APIKEY takes precedence per the MFL docs, and is sent on exports.
+    # An export with no session cookie yet falls back to the API key.
     assert url.params["APIKEY"] == "TESTAPIKEY"
 
 

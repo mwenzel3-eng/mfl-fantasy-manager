@@ -186,6 +186,34 @@ jobs/                the three scheduled jobs
 tests/               offline test suite and fixtures
 ```
 
+## Troubleshooting
+
+**`League export ... contained no host`** — MFL returned a league object with no
+`host` attribute. Almost always a credentials/league mismatch, not a bug:
+
+- An `MFL_APIKEY` is scoped to the user/franchise/league it was generated in. If
+  your key and your `MFL_LEAGUE_ID` come from different places, the export will
+  not resolve a host. Check that the key belongs to that league.
+- `MFL_LEAGUE_ID` must be the `L=` value from your league URL, and the year must
+  match the current season.
+
+**`MFL error: Invalid league ID ...`** — the league id does not exist for the
+configured year. MFL does not retain past seasons, so a league from 2025 will not
+resolve in 2026.
+
+**`No MFL credentials configured`** — set either `MFL_APIKEY` (read-only) or
+`MFL_USERNAME` + `MFL_PASSWORD` (required for writes). The client logs in
+automatically on the first request, so you do not need to call `login` yourself.
+
+**`MFL rejected the supplied username or password`** — the login endpoint was
+reached and refused the credentials. If you have 2FA or a secondary password
+configured on your MFL account, the API login needs the app-specific password
+from MFL's account settings, not your normal one.
+
+**`MFL rate limit hit (HTTP 429)`** — expected when the API has not yet registered
+your client. MFL throttles unregistered clients harder than documented. Register at
+their API Client Registration page, or raise `MFL_REQUEST_DELAY`.
+
 ## Limitations
 
 - **Projections come from MFL**, sourced from FantasySharks. They are only as good as
