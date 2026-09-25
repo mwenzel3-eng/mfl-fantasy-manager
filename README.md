@@ -218,9 +218,18 @@ site traffic. Three things help, in order of effect:
    `https://wwwNN.myfantasyleague.com/<year>/csetup?C=APICLI` (from your league's
    host), then validate the code they text to your phone. The catch: the
    `User-Agent` you register **must match** what the client sends, or registration
-   does not apply. The default is `mfl-fantasy-manager/0.1.0
-   (+https://github.com/mwenzel3-eng/mfl-fantasy-manager)`; override with
-   `MFL_USER_AGENT` if you register a different string.
+   does not apply. Register this exact string:
+
+   ```
+   mfl-fantasy-manager (+https://github.com/mwenzel3-eng/mfl-fantasy-manager)
+   ```
+
+   It deliberately carries **no version**. Since MFL matches the registered
+   string exactly, a version here would silently drop you back to unregistered
+   limits on every release, with nothing to indicate why. The version is
+   reported in the startup log line and in the `client` block of the
+   `league_status` payload instead. Override the whole string with
+   `MFL_USER_AGENT` if you register something else.
 2. **Space requests out.** One per second is the figure MFL quotes, and this
    client defaults to exactly that.
 3. **Do not retry.** MFL is explicit that retrying a failed request makes

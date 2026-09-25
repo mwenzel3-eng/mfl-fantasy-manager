@@ -32,7 +32,16 @@ except ModuleNotFoundError:  # pragma: no cover
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 API_HOST = "api.myfantasyleague.com"
-DEFAULT_USER_AGENT = "mfl-fantasy-manager/0.1.0 (+https://github.com/mwenzel3-eng/mfl-fantasy-manager)"
+
+# MFL grants registered clients roughly 2.5x the request limit, but only if the
+# User-Agent registered with them matches what the client actually sends. That
+# makes this string effectively frozen: putting a version in it would silently
+# drop the registration on every release, with no error to notice. So the
+# version is reported in logs and in the status payload instead, and this
+# string stays stable for the life of the project.
+CLIENT_NAME = "mfl-fantasy-manager"
+CLIENT_URL = "https://github.com/mwenzel3-eng/mfl-fantasy-manager"
+DEFAULT_USER_AGENT = f"{CLIENT_NAME} (+{CLIENT_URL})"
 
 
 class ConfigError(RuntimeError):

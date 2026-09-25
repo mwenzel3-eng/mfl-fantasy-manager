@@ -44,7 +44,14 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import httpx
 
-from .config import API_HOST, Settings, get_settings
+from . import __version__
+from .config import (
+    API_HOST,
+    CLIENT_NAME,
+    DEFAULT_USER_AGENT,
+    Settings,
+    get_settings,
+)
 from .errors import MFLError, WritesDisabledError
 from .models import (
     Franchise,
@@ -104,11 +111,23 @@ class MFLClient:
             await self._client.aclose()
             self._client = None
 
+    def _headers(self) -> dict[str, str]:
+        """Headers applied to every outgoing request.
+
+        Sent per-request rather than only when constructing our own client, so
+        the User-Agent is correct even when a caller injects a pre-built
+        ``httpx.AsyncClient``. That matters: MFL only honours a registered
+        client's higher rate limit if the User-Agent it sees matches the one
+        registered, so a silently default ``python-httpx/x.y`` header would
+        quietly void the registration.
+        """
+        return {"User-Agent": self.settings.user_agent}
+
     def _http(self) -> httpx.AsyncClient:
         if self._client is None:
             self._client = httpx.AsyncClient(
                 timeout=self.settings.timeout,
-                headers={"User-Agent": self.settings.user_agent},
+                headers=self._headers(),
                 follow_redirects=True,
             )
         return self._client
@@ -193,12 +212,10 @@ class MFLClient:
         await self._throttle()
         http = self._http()
         try:
+            headers = self._headers()
             if cookie and "APIKEY" not in query:
-                response = await http.get(
-                    url, params=sendable, headers={"Cookie": f"MFL_USER_ID={cookie}"}
-                )
-            else:
-                response = await http.get(url, params=sendable)
+                headers["Cookie"] = f"MFL_USER_ID={cookie}"
+            response = await http.get(url, params=sendable, headers=headers)
         except httpx.HTTPError as exc:
             raise MFLError(f"Request to {url} failed: {exc}") from exc
 
@@ -256,6 +273,7 @@ class MFLClient:
             response = await http.post(
                 url,
                 params={"XML": 1},
+                headers=self._headers(),
                 data={
                     "USERNAME": self.settings.username or "",
                     "PASSWORD": self.settings.password or "",
@@ -338,6 +356,15 @@ class MFLClient:
             "lineup_week": as_int(status.get("weeks", {}).get("LineupWeek")),
             "completed_week": as_int(status.get("weeks", {}).get("CompletedWeek")),
             "live_scoring_week": as_int(status.get("weeks", {}).get("LiveScoringWeek")),
+            # Reported here rather than encoded into the User-Agent, because
+            # the User-Agent has to stay byte-identical to the one registered
+            # with MFL for the higher request limit to apply.
+            "client": {
+                "name": CLIENT_NAME,
+                "version": __version__,
+                "user_agent": self.settings.user_agent,
+                "registered": self.settings.user_agent == DEFAULT_USER_AGENT,
+            },
         }
 
     async def league(self) -> dict[str, Any]:
