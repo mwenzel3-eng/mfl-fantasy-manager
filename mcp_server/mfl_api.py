@@ -317,25 +317,55 @@ class MFLClient:
             return self._resolved_host
         self.settings.require_read()
 
-        payload = await self._send("export", {"TYPE": "league", "L": self.settings.league_id})
+        try:
+            payload = await self._send("export", {"TYPE": "league", "L": self.settings.league_id})
+        except MFLError:
+            # The host is an optimisation, not a requirement: the api host
+            # serves league requests too and redirects to the right server. A
+            # failure to discover the host must never block real work.
+            log.info(
+                "Could not resolve the league host; falling back to %s. League "
+                "requests will redirect, which is slower but correct.",
+                API_HOST,
+            )
+            self._resolved_host = API_HOST
+            return API_HOST
+
         league = payload.get("league")
         if not isinstance(league, dict):
-            raise MFLError(
-                "League export returned no 'league' object for "
-                f"L={self.settings.league_id}; keys were {sorted(payload)}. "
-                "Check that MFL_LEAGUE_ID is correct and that these credentials "
-                "belong to that league."
-            )
+            log.info("League export for L=%s had no 'league' object (keys: %s)",
+                     self.settings.league_id, sorted(payload))
+            self._resolved_host = API_HOST
+            return API_HOST
+
         host = as_str(league.get("host"))
         if not host:
-            raise MFLError(
-                f"League export for L={self.settings.league_id} contained no host "
-                f"(name={as_str(league.get('name')) or 'unknown'!r}). This usually "
-                "means the league id is wrong, or the APIKEY belongs to a "
-                "different league than MFL_LEAGUE_ID."
+            # Observed in the wild: MFL returns the league, including its name,
+            # but omits 'host' from the JSON export. Since the host is only a
+            # performance hint, degrade to the api host rather than failing.
+            log.info(
+                "League %r (L=%s) returned no host; using %s instead. League "
+                "requests will redirect, which is slower but correct.",
+                as_str(league.get("name")) or "unnamed",
+                self.settings.league_id,
+                API_HOST,
             )
+            # Cached so the probe happens once per client, not per request.
+            self._resolved_host = API_HOST
+            return API_HOST
+
         self._resolved_host = host.lower()
         return self._resolved_host
+
+    async def my_leagues(self) -> list[dict[str, Any]]:
+        """Every league the authenticated user belongs to, with its host.
+
+        Useful for discovering a league id or host without guessing, and unlike
+        ``export?TYPE=league`` this returns a host for leagues whose JSON export
+        omits one.
+        """
+        payload = await self._send("export", {"TYPE": "myleagues"})
+        return as_list(payload.get("myleagues", {}).get("league"))
 
     # -- read: reference data ---------------------------------------------
 

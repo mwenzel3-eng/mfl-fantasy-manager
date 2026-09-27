@@ -21,7 +21,7 @@ import pytest
 
 from mcp_server.config import Settings
 from mcp_server.errors import MFLError
-from mcp_server.mfl_api import MFLClient, _error_text, _extract_cookie
+from mcp_server.mfl_api import API_HOST, MFLClient, _error_text, _extract_cookie
 
 from .conftest import load
 
@@ -174,19 +174,35 @@ async def test_login_without_a_cookie_is_reported_clearly(settings: Settings):
             await client.league()
 
 
-async def test_missing_league_host_points_at_the_likely_cause(settings: Settings):
-    """The old message was 'did not include a host', which told the user nothing."""
+async def test_missing_league_host_degrades_instead_of_failing(settings: Settings):
+    """A missing host must not block real work.
+
+    Observed against the live API: MFL returns the league, including its name,
+    but omits 'host' from the JSON export. The host is only a performance hint,
+    since the api host serves league requests too and redirects.
+    """
+    from dataclasses import replace
+
     settings = replace(settings, host=None)
-    rec = Recorder(responses={"default": {"league": {"name": "Test"}}})
+    rec = Recorder(responses={"default": {"league": {"name": "Last Man Standing"}}})
 
     async with rec.client(settings) as client:
-        with pytest.raises(MFLError) as excinfo:
-            await client.league_settings()
+        assert await client.ensure_league_host() == API_HOST
+        # And the failure is cached, so we do not re-probe on every request.
+        assert client._resolved_host == API_HOST
+        # League calls still go somewhere valid.
+        await client.league()
+        assert rec.api_calls
 
-    message = str(excinfo.value)
-    assert "host" in message
-    assert "Test" in message
-    assert "MFL_LEAGUE_ID" in message
+
+async def test_league_export_without_a_league_object_degrades(settings: Settings):
+    from dataclasses import replace
+
+    settings = replace(settings, host=None)
+    rec = Recorder(responses={"default": {"unexpected": True}})
+
+    async with rec.client(settings) as client:
+        assert await client.ensure_league_host() == API_HOST
 
 
 # -- helpers ------------------------------------------------------------
