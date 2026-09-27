@@ -23,6 +23,30 @@ SKILL_POSITIONS = frozenset({"RB", "WR", "TE"})
 
 # Injury statuses that should keep a player out of a lineup outright.
 OUT_STATUSES = frozenset({"Out", "IR", "IR?", "Doubtful", "Out?", "PUP", "NIR", "Suspended", "COVID-19"})
+
+# The rosters export spells roster status out in full ("ROSTER",
+# "INJURED_RESERVE"), while the rest of the code compares the short codes above.
+# Comparing the long form against the short code is silently false, which made
+# is_active false for every player and left injured players looking droppable.
+# Accept both spellings.
+_ROSTER_STATUS_ALIASES = {
+    "ROSTER": STATUS_ROSTER,
+    "RESERVE": STATUS_ROSTER,
+    "STARTER": STATUS_STARTER,
+    "NONSTARTER": STATUS_NONSTARTER,
+    "NON-STARTER": STATUS_NONSTARTER,
+    "INJURED_RESERVE": STATUS_IR,
+    "INJURED RESERVE": STATUS_IR,
+    "IR": STATUS_IR,
+    "TAXI": STATUS_TAXI,
+    "TS": STATUS_TAXI,
+}
+
+
+def norm_roster_status(raw: object, default: str = STATUS_ROSTER) -> str:
+    """Map a roster-status value to one of the STATUS_* codes."""
+    text = as_str(raw).upper()
+    return _ROSTER_STATUS_ALIASES.get(text, text or default)
 QUESTIONABLE_STATUSES = frozenset({"Questionable", "Q", "Out?", "IR?", "Doubtful*"})
 
 
@@ -94,9 +118,13 @@ class Player:
         return cls(
             player_id=pid,
             name=as_str(raw.get("name")),
-            position=as_str(raw.get("pos")).upper(),
+            # The live players export returns "position"; the documented
+            # field name is "pos". Reading only "pos" gave every player in the
+            # database an empty position, which quietly disabled all
+            # position-based logic: drop filtering, depth, lineup validation.
+            position=as_str(raw.get("position") or raw.get("pos")).upper(),
             team=as_str(raw.get("team")).upper(),
-            nfl_team=as_str(raw.get("nfl_team")).upper(),
+            nfl_team=as_str(raw.get("nfl_team") or raw.get("team")).upper(),
             status=as_str(raw.get("status")).upper(),
             injury_status=as_str(raw.get("injury_status")),
             injury_detail=as_str(raw.get("injury_detail")),

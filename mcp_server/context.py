@@ -112,9 +112,16 @@ async def load_snapshot(
     client: MFLClient,
     *,
     week: int | None = None,
-    free_agent_limit: int = 200,
+    free_agent_limit: int = 1000,
 ) -> Snapshot:
-    """Fetch league config, roster, projections, consensus, injuries and FAs."""
+    """Fetch league config, roster, projections, consensus, injuries and FAs.
+
+    ``free_agent_limit`` bounds the pool held in memory. It used to be a
+    request budget, and truncating by MFL id order silently discarded whichever
+    free agents happened to sort highest - the id order is not meaningful, so
+    the cap could drop exactly the players worth ranking. Projections now come
+    from one unfiltered request, so the cap costs nothing to raise.
+    """
     settings = client.settings
     status = await client.status()
     target_week = week or status.get("lineup_week") or status.get("current_week") or 1
@@ -122,7 +129,6 @@ async def load_snapshot(
 
     league = await client.league_settings()
     roster = await client.my_roster()
-    roster_ids = [r.player_id for r in roster]
 
     players = await client.players()
     # Free agents first: their projections are needed too, and fetching only
@@ -138,20 +144,17 @@ async def load_snapshot(
         client.free_agents(), default=[], name="free_agents", degraded=degraded
     )
 
+    # One unfiltered request returns projections for every player MFL has them
+    # for - rostered and free alike - and costs a single request. Restricting it
+    # to roster ids, then chunking free agents on top, both cost more and cover
+    # less: MFL only scores free agents it has data for, so the free agents
+    # missing from the unfiltered response genuinely have no projection and no
+    # amount of re-requesting will produce one.
     projected = await _safe(
-        client.projected_scores(week=target_week, players=roster_ids),
+        client.projected_scores(week=target_week),
         name="projected_scores",
         degraded=degraded,
     )
-    # MFL's projection endpoint accepts a few hundred ids; chunk so a large
-    # free-agent pool does not get rejected as an over-long request.
-    for chunk in _chunks(list(free_agents)[:free_agent_limit], 200):
-        extra = await _safe(
-            client.projected_scores(week=target_week, players=chunk),
-            name="projected_scores",
-            degraded=degraded,
-        )
-        projected = {**projected, **(extra or {})}
 
     wsis = await _safe(
         client.who_should_i_start(week=target_week),

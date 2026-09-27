@@ -4,148 +4,148 @@
       {
         "id": "0001",
         "name": "A. Quarterback",
-        "pos": "QB",
         "team": "NE",
         "nfl_team": "NE",
-        "status": "S"
+        "status": "S",
+        "position": "QB"
       },
       {
         "id": "0002",
         "name": "A. Runningback",
-        "pos": "RB",
         "team": "NE",
         "nfl_team": "NE",
-        "status": "S"
+        "status": "S",
+        "position": "RB"
       },
       {
         "id": "0003",
         "name": "B. Runningback",
-        "pos": "RB",
         "team": "NE",
         "nfl_team": "NE",
-        "status": "S"
+        "status": "S",
+        "position": "RB"
       },
       {
         "id": "0004",
         "name": "C. Receiver",
-        "pos": "WR",
         "team": "NE",
         "nfl_team": "NE",
-        "status": "S"
+        "status": "S",
+        "position": "WR"
       },
       {
         "id": "0005",
         "name": "D. Receiver",
-        "pos": "WR",
         "team": "NE",
         "nfl_team": "NE",
-        "status": "S"
+        "status": "S",
+        "position": "WR"
       },
       {
         "id": "0006",
         "name": "E. Receiver",
-        "pos": "WR",
         "team": "NE",
         "nfl_team": "NE",
-        "status": "S"
+        "status": "S",
+        "position": "WR"
       },
       {
         "id": "0007",
         "name": "F. Tightend",
-        "pos": "TE",
         "team": "NE",
         "nfl_team": "NE",
-        "status": "S"
+        "status": "S",
+        "position": "TE"
       },
       {
         "id": "0008",
         "name": "G. Kicker",
-        "pos": "K",
         "team": "NE",
         "nfl_team": "NE",
-        "status": "S"
+        "status": "S",
+        "position": "K"
       },
       {
         "id": "0009",
         "name": "H. Defense",
-        "pos": "DEF",
         "team": "NE",
         "nfl_team": "NE",
-        "status": "S"
+        "status": "S",
+        "position": "DEF"
       },
       {
         "id": "0010",
         "name": "I. Bench QB",
-        "pos": "QB",
         "team": "NE",
         "nfl_team": "NE",
-        "status": "R"
+        "status": "R",
+        "position": "QB"
       },
       {
         "id": "0011",
         "name": "J. Injured WR",
-        "pos": "WR",
         "team": "NE",
         "nfl_team": "NE",
-        "status": "IR"
+        "status": "IR",
+        "position": "WR"
       },
       {
         "id": "0012",
         "name": "K. Taxi RB",
-        "pos": "RB",
         "team": "NE",
         "nfl_team": "NE",
-        "status": "TS"
+        "status": "TS",
+        "position": "RB"
       },
       {
         "id": "0020",
         "name": "Z1 Free Agent WR",
-        "pos": "WR",
         "team": "BUF",
         "nfl_team": "BUF",
-        "status": "FA"
+        "status": "FA",
+        "position": "WR"
       },
       {
         "id": "0021",
         "name": "Z2 Free Agent RB",
-        "pos": "RB",
         "team": "BUF",
         "nfl_team": "BUF",
-        "status": "FA"
+        "status": "FA",
+        "position": "RB"
       },
       {
         "id": "0022",
         "name": "Z3 Free Agent QB",
-        "pos": "QB",
         "team": "BUF",
         "nfl_team": "BUF",
-        "status": "FA"
+        "status": "FA",
+        "position": "QB"
       },
       {
         "id": "0023",
         "name": "Z4 Out Receiver",
-        "pos": "WR",
         "team": "BUF",
         "nfl_team": "BUF",
         "status": "FA",
         "injury_status": "Out",
-        "injury_detail": "ACL"
+        "injury_detail": "ACL",
+        "position": "WR"
       },
       {
         "id": "0030",
         "name": "Tee Flex Filler",
-        "pos": "TE",
         "team": "NE",
         "nfl_team": "NE",
-        "status": "R"
+        "status": "R",
+        "position": "TE"
       },
       {
         "id": "0031",
         "name": "L. Reserve Receiver",
-        "pos": "WR",
         "team": "NE",
         "nfl_team": "NE",
-        "status": "R"
+        "status": "R",
+        "position": "WR"
       }
     ]
   }

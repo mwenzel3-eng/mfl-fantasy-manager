@@ -59,6 +59,7 @@ from .models import (
     Player,
     RosterEntry,
     RosterPlayer,
+    norm_roster_status,
     as_float,
     as_int,
     as_list,
@@ -81,6 +82,55 @@ __all__ = ["MFLClient", "MFLError", "WritesDisabledError"]
 # Note that `players` and `projectedScores` are deliberately absent: they accept
 # L, and projectedScores/whoShouldIStart *require* it.
 _GLOBAL_EXPORTS = frozenset({"injuries", "nflByeWeeks", "myleagues", "playerRanks"})
+
+def _key_any(payload: Mapping[str, Any], *levels: tuple[str, ...]) -> list[dict[str, Any]]:
+    """Walk nested key levels, trying each spelling offered at that level.
+
+    MFL mixes camelCase and snake_case across exports and has renamed keys
+    without notice - the live projections export returns
+    ``projectedScores.playerScore`` while the docs say ``player_score``.
+    Reading one spelling and getting nothing is indistinguishable from "this
+    week has no projections", so every level accepts all its spellings.
+
+    Each argument is one level, given as a tuple of acceptable spellings in
+    preference order. The first spelling that yields anything wins.
+    """
+    current: list[Any] = [payload]
+    for spellings in levels:
+        found: list[Any] = []
+        for spelling in spellings:
+            for block in current:
+                if isinstance(block, Mapping):
+                    value = block.get(spelling)
+                    if value is not None:
+                        found.append(value)
+            if found:
+                break
+        current = found
+        if not current:
+            return []
+    for block in current:
+        if block is not None:
+            return as_list(block)
+    return []
+
+
+def roster_players(franchise: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The player list on a franchise from the rosters export.
+
+    The live API returns it as a ``player`` array directly on the franchise,
+    with no ``roster`` wrapper. The documented shape nests it as
+    ``roster.player``. Reading only the documented one silently yields an empty
+    roster for every franchise, which then reads as "your team is empty" and
+    quietly produces no recommendations at all.
+    """
+    nested = franchise.get("roster")
+    if isinstance(nested, Mapping):
+        found = as_list(nested.get("player"))
+        if found:
+            return found
+    return as_list(franchise.get("player"))
+
 
 class MFLClient:
     """Thin, well-behaved wrapper over the MFL export/import API.
@@ -594,28 +644,54 @@ class MFLClient:
     async def free_agents(self) -> list[str]:
         """Player ids currently available as free agents in this league.
 
-        MFL's JSON uses the camelCase key ``freeAgents`` for this export, which
-        is an easy thing to miss and fails silently as an empty pool. The
-        snake_case spelling is accepted too, and ``players?STATUS=freeagent``
-        is used as a fallback so a rename cannot silently return zero.
+        The live JSON nests the list under ``freeAgents.leagueUnit.player`` -
+        the ``leagueUnit`` wrapper is easy to miss, and reading
+        ``freeAgents.player`` returns nothing at all. Because that produced an
+        empty list rather than an error, the previous fallback to
+        ``players?STATUS=freeagent`` kicked in; that parameter is silently
+        ignored by the API, so it returned every player in the league and the
+        waiver job went on to rank a team defense as its best available add.
+        Both halves of that are fixed here: the nesting is read correctly, and
+        the fallback that could not filter is gone rather than trusted.
         """
         self.settings.require_read()
         payload = await self.export("freeAgents")
-        players = None
+
+        players: list[dict[str, Any]] = []
         for key in ("freeAgents", "free_agents"):
             block = payload.get(key)
-            if isinstance(block, dict) and block.get("player") is not None:
+            if not isinstance(block, Mapping):
+                continue
+            unit = block.get("leagueUnit")
+            if isinstance(unit, Mapping) and unit.get("player") is not None:
+                players = as_list(unit.get("player"))
+                break
+            if block.get("player") is not None:
                 players = as_list(block.get("player"))
                 break
 
-        if not players:
-            # Independent path to the same answer, so an empty result is a real
-            # absence of free agents rather than a response we failed to read.
-            listed = await self.export("players", STATUS="freeagent")
-            players = as_list(listed.get("players", {}).get("player"))
-
         ids = [norm_player_id(p.get("id")) for p in players]
         return [pid for pid in ids if pid]
+
+    async def free_agent_entries(self) -> list[dict[str, Any]]:
+        """Free agents with their claim status, for reporting and filtering.
+
+        MFL marks players with pending waiver claims as ``locked``. They are not
+        addable right now, so a report that counts them as available overstates
+        the pool and proposes moves that cannot be made.
+        """
+        self.settings.require_read()
+        payload = await self.export("freeAgents")
+        for key in ("freeAgents", "free_agents"):
+            block = payload.get(key)
+            if not isinstance(block, Mapping):
+                continue
+            unit = block.get("leagueUnit")
+            if isinstance(unit, Mapping) and unit.get("player") is not None:
+                return as_list(unit.get("player"))
+            if block.get("player") is not None:
+                return as_list(block.get("player"))
+        return []
 
     async def injuries(self, week: int | None = None) -> dict[str, Any]:
         """The NFL injury report. ``week`` defaults to the latest available."""
@@ -655,7 +731,11 @@ class MFLClient:
         payload = await self.export("projectedScores", **params)
         return {
             norm_player_id(s.get("id")): as_float(s.get("score"))
-            for s in as_list(payload.get("projectedScores", {}).get("player_score"))
+            for s in _key_any(
+                payload,
+                ("projectedScores", "projected_scores"),
+                ("playerScore", "player_score"),
+            )
         }
 
     async def who_should_i_start(
@@ -677,9 +757,16 @@ class MFLClient:
             fid = await self.my_franchise_id()
             params["FRANCHISE"] = fid
         payload = await self.export("whoShouldIStart", **params)
+        # Same camelCase/snake_case ambiguity as projectedScores. Only the
+        # projections spelling has been confirmed against the live API; the
+        # consensus export is written the same way and is tolerant of both.
         return {
             norm_player_id(s.get("id")): as_float(s.get("score"))
-            for s in as_list(payload.get("whoShouldIStart", {}).get("player_score"))
+            for s in _key_any(
+                payload,
+                ("whoShouldIStart", "who_should_i_start"),
+                ("playerScore", "player_score"),
+            )
         }
 
     async def pending_waivers(self) -> list[dict[str, Any]]:
@@ -708,12 +795,12 @@ class MFLClient:
         out: list[RosterEntry] = []
         for franchise in await self.rosters():
             fid = norm_franchise_id(franchise.get("id"))
-            for entry in as_list(franchise.get("roster", {}).get("player")):
+            for entry in roster_players(franchise):
                 out.append(
                     RosterEntry(
                         player_id=norm_player_id(entry.get("id")),
                         franchise_id=fid,
-                        status=as_str(entry.get("status"), "R").upper(),
+                        status=norm_roster_status(entry.get("status")),
                         salary=as_str(entry.get("salary")),
                         contract=as_str(entry.get("contract")),
                     )
@@ -723,12 +810,12 @@ class MFLClient:
     async def my_roster(self) -> list[RosterPlayer]:
         """My active roster joined with player metadata, projections and health."""
         franchise = await self.my_franchise()
-        raw_players = as_list(franchise.get("roster", {}).get("player"))
+        raw_players = roster_players(franchise)
         entries = [
             RosterEntry(
                 player_id=norm_player_id(p.get("id")),
                 franchise_id=norm_franchise_id(franchise.get("id")),
-                status=as_str(p.get("status"), "R").upper(),
+                status=norm_roster_status(p.get("status")),
                 salary=as_str(p.get("salary")),
             )
             for p in raw_players

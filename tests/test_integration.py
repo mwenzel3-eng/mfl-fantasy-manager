@@ -489,7 +489,7 @@ async def test_job_fails_and_reports_size_on_an_empty_roster(settings, monkeypat
         if request.url.params.get("TYPE") == "rosters":
             data = make_handler()(request).json()
             for fr in data.get("rosters", {}).get("franchise", []):
-                fr["roster"] = {"player": []}
+                fr["player"] = []
             return httpx.Response(200, json=data)
         return make_handler()(request)
 

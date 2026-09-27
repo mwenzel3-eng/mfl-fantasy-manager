@@ -15,7 +15,14 @@ import pytest
 
 from mcp_server.config import Settings
 from mcp_server.fantasy_engine import build_pool
-from mcp_server.models import LeagueSettings, Player, RosterEntry, RosterPlayer, parse_slot_spec
+from mcp_server.models import (
+    LeagueSettings,
+    Player,
+    RosterEntry,
+    RosterPlayer,
+    norm_roster_status,
+    parse_slot_spec,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -138,10 +145,12 @@ def roster_entries() -> list[RosterEntry]:
         RosterEntry(
             player_id=p["id"],
             franchise_id="0001",
-            status=p["status"],
+            # Normalised here so the fixture exercises the same mapping the
+            # client applies to the live "STARTER"/"INJURED_RESERVE" values.
+            status=norm_roster_status(p["status"]),
             salary=p.get("salary", ""),
         )
-        for p in franchise["roster"]["player"]
+        for p in franchise["player"]
     ]
 
 
@@ -175,10 +184,10 @@ def roster(roster_entries: list[RosterEntry], players: list[Player]) -> list[Ros
 def pool(players: list[Player]) -> Any:
     projected = {
         s["id"]: float(s["score"])
-        for s in load("projected_scores.json")["projectedScores"]["player_score"]
+        for s in load("projected_scores.json")["projectedScores"]["playerScore"]
     }
     wsis = {
         s["id"]: float(s["score"])
-        for s in load("wsis.json")["whoShouldIStart"]["player_score"]
+        for s in load("wsis.json")["whoShouldIStart"]["playerScore"]
     }
     return build_pool(players, week=WEEK, projected=projected, wsis=wsis)
