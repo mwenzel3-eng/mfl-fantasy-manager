@@ -1,5 +1,7 @@
 # mfl-fantasy-manager
 
+My fantasy league co-manager. Used to help with waivers and the starting lineup.
+
 A Python MCP server and decision engine for [MyFantasyLeague.com](https://www.myfantasyleague.com/).
 It reads your league, scores your roster against your league's own scoring rules, and
 recommends (and, once you explicitly enable it, submits) free-agent moves, lineups and
