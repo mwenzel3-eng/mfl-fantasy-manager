@@ -18,7 +18,7 @@ from mcp_server.context import Snapshot
 from mcp_server.fantasy_engine import explain
 from mcp_server.mfl_api import MFLError, MFLClient
 from mcp_server.models import SKILL_POSITIONS
-from mcp_server.waivers import recommend_moves
+from mcp_server.waivers import nearest_miss, recommend_moves
 
 from ._common import JobResult, run_job
 
@@ -52,6 +52,13 @@ async def body(client: MFLClient, snap: Snapshot, result: JobResult) -> None:
     )
     if not moves:
         result.say("No add/drop move cleared the value threshold this week.")
+        # Say why. "Nothing was good enough" and "the data never arrived" look
+        # identical from the outside, and guessing between them wastes a week.
+        near = nearest_miss(
+            snap.roster, candidates, snap.pool, snap.league
+        )
+        if near:
+            result.say(near)
         return
 
     result.say("")

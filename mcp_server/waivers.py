@@ -95,17 +95,25 @@ def recommend_moves(
 
     moves: list[WaiverMove] = []
     for candidate in sorted(free_agents, key=lambda v: -v.adjusted):
-        add_value = depth_adjusted_value(candidate, roster, league=league)
-        if add_value < MIN_VALUE_GAIN:
-            continue
-
-        # Prefer dropping the same position; that keeps the roster balanced and
-        # is almost always the intended move.
+        # Pick the drop before valuing the add, because which drop is chosen
+        # determines whether the depth penalty applies at all.
         preferred = by_position.get(candidate.player.position, [])
         if preferred:
             drop_entry, drop_value = preferred[0]
+            # The drop removes a player at this exact position, which is the
+            # surplus that depth_adjusted_value() would otherwise charge for.
+            # Applying both counted the same overstaffing twice and rejected
+            # almost every same-position swap: at three WRs in three slots the
+            # penalty alone is 2 * 0.45 = 0.9, nearly double the threshold.
+            add_value = candidate.adjusted
         else:
             drop_entry, drop_value = droppables[0]
+            # Nothing at this position is being dropped, so the surplus really
+            # does stay and the depth penalty is genuine.
+            add_value = depth_adjusted_value(candidate, roster, league=league)
+
+        if add_value < MIN_VALUE_GAIN:
+            continue
 
         if add_value - drop_value < MIN_VALUE_GAIN:
             continue
@@ -148,6 +156,55 @@ def recommend_moves(
             break
 
     return sorted(moves, key=lambda m: -m.net_gain)
+
+
+def nearest_miss(
+    roster: Sequence[RosterPlayer],
+    free_agents: Sequence[PlayerValue],
+    pool: PlayerPool,
+    league: LeagueSettings,
+    *,
+    protect_ids: Sequence[str] = (),
+) -> str | None:
+    """Describe the closest rejected swap, or None if there was no candidate.
+
+    "No move cleared the threshold" is unactionable on its own: it reads the
+    same whether the market is empty, the projections are missing, or the
+    threshold is simply strict. This reports the actual numbers so the next run
+    says which it was.
+    """
+    if not free_agents:
+        return "No free agents were available to evaluate."
+    droppables = drop_candidates(roster, pool, league=league, protect_ids=protect_ids)
+    if not droppables:
+        return "No rostered player was droppable, so there was nothing to compare against."
+
+    by_position: dict[str, list[tuple[RosterPlayer, float]]] = {}
+    for pair in droppables:
+        by_position.setdefault(pair[0].position, []).append(pair)
+
+    best: tuple[float, PlayerValue, RosterPlayer] | None = None
+    for candidate in sorted(free_agents, key=lambda v: -v.adjusted):
+        preferred = by_position.get(candidate.player.position, [])
+        if preferred:
+            drop_entry, drop_value = preferred[0]
+            add_value = candidate.adjusted
+        else:
+            drop_entry, drop_value = droppables[0]
+            add_value = depth_adjusted_value(candidate, roster, league=league)
+        gain = add_value - drop_value
+        if best is None or gain > best[0]:
+            best = (gain, candidate, drop_entry)
+
+    if best is None:
+        return None
+    gain, candidate, drop_entry = best
+    return (
+        f"Closest call: +{candidate.player.name} ({candidate.player.position}) "
+        f"projects {candidate.projected:.1f} against {drop_entry.player.name} "
+        f"({drop_entry.position}), a net {gain:+.1f} - below the "
+        f"{MIN_VALUE_GAIN:.1f} threshold."
+    )
 
 
 def recommend_claims(

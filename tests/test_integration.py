@@ -368,3 +368,110 @@ def test_step_summary_is_skipped_outside_actions(settings: Settings, monkeypatch
     result = JobResult("wednesday-waivers")
     result.say("nothing to see")
     _write_step_summary(result)  # must not raise
+
+
+# -- depth penalty must not be double-counted -----------------------------
+
+
+async def test_same_position_swap_ignores_the_depth_penalty(settings: Settings):
+    """Dropping a player at the same position removes the surplus the depth
+    penalty charges for. Applying both rejected nearly every same-position
+    swap, because the penalty (0.45/surplus) exceeded the gain threshold.
+    """
+    from mcp_server.waivers import recommend_moves
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(make_handler()))
+    async with MFLClient(settings, client=http) as client:
+        snap = await load_snapshot(client, week=3)
+
+    # The fixtures have a deep WR group, which is exactly the triggering case.
+    wr_roster = [r for r in snap.roster if r.position == "WR"]
+    assert len(wr_roster) >= 2, "fixture must exercise roster depth"
+
+    moves = recommend_moves(snap.roster, snap.free_agent_values(60), snap.pool, snap.league)
+    for move in moves:
+        if move.add.player.position == move.drop.position:
+            # A same-position swap must not be discounted for depth.
+            assert move.add_value == pytest.approx(
+                move.add.adjusted, abs=0.001
+            ), "depth penalty double-counted on a same-position swap"
+
+
+async def test_moves_are_found_for_a_deep_roster(settings: Settings):
+    """The regression that motivated the fix: zero moves on a deep roster."""
+    from mcp_server.waivers import recommend_moves
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(make_handler()))
+    async with MFLClient(settings, client=http) as client:
+        snap = await load_snapshot(client, week=3)
+    moves = recommend_moves(
+        snap.roster, snap.free_agent_values(60), snap.pool, snap.league
+    )
+    assert moves, "expected at least one waiver move"
+
+
+async def test_cross_position_add_still_pays_the_depth_penalty(settings: Settings):
+    """Only same-position swaps are exempt; a kept surplus is real."""
+    from mcp_server.waivers import recommend_moves
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(make_handler()))
+    async with MFLClient(settings, client=http) as client:
+        snap = await load_snapshot(client, week=3)
+
+    moves = recommend_moves(snap.roster, snap.free_agent_values(60), snap.pool, snap.league)
+    cross = [m for m in moves if m.add.player.position != m.drop.position]
+    for move in cross:
+        assert move.add_value <= move.add.adjusted + 0.001
+
+
+def test_nearest_miss_explains_an_empty_result(settings: Settings):
+    """A rejected run must report the numbers, not just assert emptiness."""
+    from mcp_server.waivers import nearest_miss
+
+    assert "No free agents" in nearest_miss([], [], None, None)
+
+
+def test_nearest_miss_reports_when_nothing_is_droppable(settings: Settings):
+    from mcp_server.fantasy_engine import Player, PlayerValue
+    from mcp_server.models import RosterPlayer
+    from mcp_server.waivers import nearest_miss
+
+    fa = PlayerValue(
+        player=Player(player_id="0009", name="FA", position="WR"),
+        projected=9.0, wsis=0.0, available=True,
+    )
+    # An IR player is never droppable, so there is nothing to compare against.
+    roster = [
+        RosterPlayer(
+            player=Player(player_id="0001", name="Injured", position="QB"),
+            status="IR",
+        )
+    ]
+    assert "droppable" in nearest_miss(roster, [fa], None, None)
+
+
+async def test_nearest_miss_reports_the_closest_swap(settings: Settings):
+    from mcp_server.waivers import nearest_miss
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(make_handler()))
+    async with MFLClient(settings, client=http) as client:
+        snap = await load_snapshot(client, week=3)
+
+    # A threshold no swap can clear, so the near-miss path is the one exercised.
+    import mcp_server.waivers as waivers
+
+    original = waivers.MIN_VALUE_GAIN
+    try:
+        waivers.MIN_VALUE_GAIN = 10_000.0
+        moves = waivers.recommend_moves(
+            snap.roster, snap.free_agent_values(60), snap.pool, snap.league
+        )
+        text = waivers.nearest_miss(
+            snap.roster, snap.free_agent_values(60), snap.pool, snap.league
+        )
+    finally:
+        waivers.MIN_VALUE_GAIN = original
+
+    assert moves == []
+    assert "Closest call" in text
+    assert "threshold" in text
