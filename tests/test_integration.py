@@ -219,3 +219,152 @@ async def test_job_waivers_writes_only_the_single_best_move(writable_settings: S
     # Deliberately conservative: one move per week, not a shopping spree.
     assert calls == ["fcfsWaiver"]
     assert result.changed is True
+
+
+# -- a failed feed must not look like an empty one ------------------------
+
+
+def make_failing_handler(failing: set[str]):
+    """Handler that 500s the named export types, like a throttle or outage."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        rtype = request.url.params.get("TYPE")
+        if rtype in failing:
+            return httpx.Response(500, text="server error")
+        return make_handler()(request)
+
+    return handler
+
+
+async def test_snapshot_records_which_feeds_degraded(settings: Settings):
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(make_failing_handler({"injuries"}))
+    )
+    async with MFLClient(settings, client=http) as client:
+        snap = await load_snapshot(client, week=3)
+    assert "injuries" in snap.degraded
+    assert "free_agents" not in snap.degraded
+
+
+async def test_healthy_snapshot_has_no_degraded_feeds(settings: Settings):
+    http = httpx.AsyncClient(transport=httpx.MockTransport(make_handler()))
+    async with MFLClient(settings, client=http) as client:
+        snap = await load_snapshot(client, week=3)
+    assert snap.degraded == {}
+
+async def test_missing_free_agent_list_fails_the_job(settings: Settings):
+    """A throttled free-agent fetch must not report success.
+
+    This is the bug that made a green run show no data: the fetch degraded to
+    an empty list, the job printed "0 free agents", and exit_code() returned 0
+    because nothing raised.
+    """
+    from jobs._common import JobResult
+    from jobs.wednesday_waivers import body
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Only the free-agent requests fail. The full player pool also uses
+        # TYPE=players and is mandatory, so failing it outright would take the
+        # whole snapshot down instead of exercising the degradation path.
+        rtype = request.url.params.get("TYPE")
+        if rtype == "freeAgents":
+            return httpx.Response(500, text="server error")
+        if rtype == "players" and request.url.params.get("STATUS") == "freeagent":
+            return httpx.Response(500, text="server error")
+        return make_handler()(request)
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    async with MFLClient(settings, client=http) as client:
+        snap = await load_snapshot(client, week=3)
+        result = JobResult("wednesday-waivers")
+        await body(client, snap, result)
+
+    assert snap.degraded.get("free_agents")
+    assert result.error is not None, "must not pass silently"
+    assert result.exit_code() == 1
+    text = "\n".join(result.lines)
+    assert "could not be fetched" in text
+    assert "Free agents available: 0" not in text
+
+
+async def test_genuinely_empty_free_agent_pool_still_passes(settings: Settings):
+    """Zero free agents that genuinely exist is a real, passing result."""
+    from jobs._common import JobResult
+    from jobs.wednesday_waivers import body
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        rtype = request.url.params.get("TYPE")
+        # Both the primary key and the players?STATUS=freeagent fallback must
+        # be empty, otherwise the fallback legitimately supplies players.
+        if rtype == "freeAgents":
+            return httpx.Response(200, json={"freeAgents": {"player": []}})
+        if rtype == "players" and request.url.params.get("STATUS") == "freeagent":
+            return httpx.Response(200, json={"players": {"player": []}})
+        return make_handler()(request)
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    async with MFLClient(settings, client=http) as client:
+        snap = await load_snapshot(client, week=3)
+        result = JobResult("wednesday-waivers")
+        await body(client, snap, result)
+
+    assert "free_agents" not in snap.degraded
+    assert result.error is None
+    assert result.exit_code() == 0
+    assert "Free agents available: 0" in "\n".join(result.lines)
+
+
+async def test_missing_projections_warn_but_do_not_fail(settings: Settings):
+    """Projections are an enrichment: warn, still exit 0."""
+    from jobs._common import JobResult
+    from jobs.wednesday_waivers import body
+
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(make_failing_handler({"projectedScores"}))
+    )
+    async with MFLClient(settings, client=http) as client:
+        snap = await load_snapshot(client, week=3)
+        result = JobResult("wednesday-waivers")
+        await body(client, snap, result)
+
+    assert "projected_scores" in snap.degraded
+    assert result.error is None
+    assert "Projections were unavailable" in "\n".join(result.lines)
+
+
+def test_step_summary_is_written_for_actions(settings: Settings, tmp_path, monkeypatch):
+    """The report must land on the run page, not only in the log tail."""
+    from jobs._common import JobResult, _write_step_summary
+
+    target = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(target))
+    result = JobResult("wednesday-waivers")
+    result.say("Free agents available: 12")
+    _write_step_summary(result)
+
+    text = target.read_text()
+    assert "wednesday-waivers" in text
+    assert "Free agents available: 12" in text
+    assert "OK" in text
+
+
+def test_step_summary_flags_a_failure(settings: Settings, tmp_path, monkeypatch):
+    from jobs._common import JobResult, _write_step_summary
+
+    target = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(target))
+    result = JobResult("wednesday-waivers")
+    result.error = "free agent list unavailable"
+    _write_step_summary(result)
+
+    assert "FAILED" in target.read_text()
+    assert "free agent list unavailable" in target.read_text()
+
+
+def test_step_summary_is_skipped_outside_actions(settings: Settings, monkeypatch):
+    from jobs._common import JobResult, _write_step_summary
+
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    result = JobResult("wednesday-waivers")
+    result.say("nothing to see")
+    _write_step_summary(result)  # must not raise

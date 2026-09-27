@@ -27,6 +27,19 @@ CANDIDATE_POOL = 120
 
 
 async def body(client: MFLClient, snap: Snapshot, result: JobResult) -> None:
+    # An empty free-agent list is only good news if the list actually arrived.
+    # Without this check a throttled or failed fetch reports "0 free agents"
+    # and the run passes, which looks identical to a league with no moves.
+    if "free_agents" in snap.degraded:
+        result.say("Free agent list could not be fetched, so no advice is possible.")
+        result.say(f"  Reason: {snap.degraded['free_agents']}")
+        result.error = "free agent list unavailable"
+        return
+
+    if "projected_scores" in snap.degraded:
+        result.say("Projections were unavailable, so rankings below are unreliable.")
+        result.say(f"  Reason: {snap.degraded['projected_scores']}")
+
     candidates = snap.free_agent_values(limit=CANDIDATE_POOL)
     result.say(f"Free agents available: {len(snap.free_agent_ids)}")
 

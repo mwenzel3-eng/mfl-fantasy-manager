@@ -72,6 +72,33 @@ def _git_commit() -> str | None:
         return None
 
 
+def _write_step_summary(result: JobResult) -> None:
+    """Publish the report to the Actions run page.
+
+    Without this the only copy is at the very bottom of a log that also
+    contains pip output, which is easy to miss entirely: a run can look like
+    it produced nothing when it did. No-op outside Actions.
+    """
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    commit = _git_commit() or "unknown"
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(f"## {result.name}\n\n")
+            handle.write(
+                f"`{__version__}` · commit `{commit}` · "
+                f"{'FAILED' if result.error else 'OK'}"
+                + (" · writes applied\n\n" if result.changed else "\n\n")
+            )
+            if result.error:
+                handle.write(f"**Error:** {result.error}\n\n")
+            body = "\n".join(result.lines) or "_(no output)_"
+            handle.write(f"```text\n{body}\n```\n")
+    except OSError as exc:
+        log.warning("Could not write the step summary: %s", exc)
+
+
 async def run_job(
     name: str,
     body,
@@ -112,6 +139,7 @@ async def run_job(
 
     text = result.as_text()
     print(text)
+    _write_step_summary(result)
     try:
         await notifier.send(text)
     except Exception as exc:  # noqa: BLE001 - notification must not mask the job

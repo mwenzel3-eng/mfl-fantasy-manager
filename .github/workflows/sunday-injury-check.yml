@@ -48,6 +48,9 @@ jobs:
           MFL_PASSWORD: ${{ secrets.MFL_PASSWORD }}
           MFL_DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '1' || vars.MFL_DRY_RUN }}
           MFL_ENABLE_WRITES: ${{ vars.MFL_ENABLE_WRITES }}
+          # Unset vars resolve to empty strings, so the log level is pinned
+          # here rather than left to the default.
+          MFL_LOG_LEVEL: ${{ vars.MFL_LOG_LEVEL || 'INFO' }}
           SMS_PROVIDER: ${{ vars.SMS_PROVIDER }}
           TWILIO_SID: ${{ secrets.TWILIO_SID }}
           TWILIO_TOKEN: ${{ secrets.TWILIO_TOKEN }}
@@ -59,4 +62,3 @@ jobs:
           else
             python -m mcp_server.cli injuries
           fi
-

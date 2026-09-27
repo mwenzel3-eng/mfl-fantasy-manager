@@ -36,6 +36,11 @@ class Snapshot:
     free_agent_ids: list[str] = field(default_factory=list)
     status: dict = field(default_factory=dict)
     generated_at: datetime | None = None
+    # Feed name -> why it is missing. Absent keys mean the feed was fetched
+    # successfully. Without this, a throttled or failed feed is
+    # indistinguishable from a feed that is genuinely empty, and a job that
+    # silently did nothing still reports success.
+    degraded: dict[str, str] = field(default_factory=dict)
 
     def now_local(self) -> datetime:
         tz = ZoneInfo(self.settings.league_timezone)
@@ -123,20 +128,42 @@ async def load_snapshot(
     # Free agents first: their projections are needed too, and fetching only
     # rostered players would leave every free agent projecting at zero, which
     # makes them all look worthless.
-    free_agents = await _safe(client.free_agents(), default=[])
+    # Feeds are fetched through ``_safe`` so one dead enrichment does not break
+    # the run, but every degradation is recorded. A caller that needs a feed
+    # to be present (the waiver job needs the free-agent list) can then tell
+    # "there are no free agents" apart from "I could not fetch the list".
+    degraded: dict[str, str] = {}
+
+    free_agents = await _safe(
+        client.free_agents(), default=[], name="free_agents", degraded=degraded
+    )
 
     projected = await _safe(
-        client.projected_scores(week=target_week, players=roster_ids)
+        client.projected_scores(week=target_week, players=roster_ids),
+        name="projected_scores",
+        degraded=degraded,
     )
     # MFL's projection endpoint accepts a few hundred ids; chunk so a large
     # free-agent pool does not get rejected as an over-long request.
     for chunk in _chunks(list(free_agents)[:free_agent_limit], 200):
-        extra = await _safe(client.projected_scores(week=target_week, players=chunk))
+        extra = await _safe(
+            client.projected_scores(week=target_week, players=chunk),
+            name="projected_scores",
+            degraded=degraded,
+        )
         projected = {**projected, **(extra or {})}
 
-    wsis = await _safe(client.who_should_i_start(week=target_week))
-    injuries_raw = await _safe(client.injuries(target_week))
-    bye_map = await _safe(client.bye_weeks(target_week))
+    wsis = await _safe(
+        client.who_should_i_start(week=target_week),
+        name="who_should_i_start",
+        degraded=degraded,
+    )
+    injuries_raw = await _safe(
+        client.injuries(target_week), name="injuries", degraded=degraded
+    )
+    bye_map = await _safe(
+        client.bye_weeks(target_week), name="nflByeWeeks", degraded=degraded
+    )
 
     pool = build_pool(players, week=target_week, projected=projected, wsis=wsis)
     report = build_report(roster, injuries_raw, week=target_week, bye_map=bye_map)
@@ -151,6 +178,7 @@ async def load_snapshot(
         free_agent_ids=list(free_agents)[:free_agent_limit],
         status=status,
         generated_at=snap_now(settings),
+        degraded=degraded,
     )
 
 
@@ -158,14 +186,21 @@ def snap_now(settings: Settings) -> datetime:
     return datetime.now(ZoneInfo(settings.league_timezone))
 
 
-async def _safe(coro, default=None):
+async def _safe(coro, default=None, *, name: str | None = None, degraded=None):
     """Run a feed, degrading to a default rather than failing the whole snapshot.
 
     Injuries, consensus and bye data are enrichments. Losing one should
     degrade the recommendation, not break the run.
+
+    When ``name`` and ``degraded`` are given, the failure is recorded so callers
+    can tell a missing feed from an empty one. That distinction is the whole
+    point: a waiver run that could not fetch the free-agent list must not look
+    identical to a league that genuinely has nobody available.
     """
     try:
         return await coro
     except MFLError as exc:
         log.warning("Optional feed unavailable: %s", exc)
+        if name and degraded is not None:
+            degraded[name] = str(exc)
         return {} if default is None else default
