@@ -12,7 +12,8 @@ import os
 import sys
 from typing import Any
 
-from mcp_server.config import Settings, get_settings
+from mcp_server import __version__
+from mcp_server.config import REPO_ROOT, Settings, get_settings
 from mcp_server.context import load_snapshot
 from mcp_server.mfl_api import MFLClient
 from mcp_server.notify import build_notifier
@@ -50,6 +51,27 @@ class JobResult:
         return 1 if self.error else 0
 
 
+def _git_commit() -> str | None:
+    """Short SHA of the checked-out commit, or None outside a git checkout.
+
+    Lets a job log prove which code actually ran, which is the difference
+    between "the fix is broken" and "CI ran the previous commit".
+    """
+    try:
+        head = REPO_ROOT / ".git" / "HEAD"
+        if not head.is_file():
+            return None
+        ref = head.read_text().strip()
+        if ref.startswith("ref: "):
+            packed = REPO_ROOT / ".git" / ref[5:]
+            if packed.is_file():
+                return packed.read_text().strip()[:7]
+            return ref[5:].rsplit("/", 1)[-1][:7]
+        return ref[:7]
+    except OSError:
+        return None
+
+
 async def run_job(
     name: str,
     body,
@@ -63,6 +85,17 @@ async def run_job(
     result = JobResult(name, force=force)
     client = MFLClient(settings)
     notifier = build_notifier(settings)
+    # Stamp the code identity into the job log. Without this, a stale CI run and
+    # a fresh local run are indistinguishable when the error text is the same,
+    # which is exactly the confusion this line exists to prevent. Logged rather
+    # than said(), so it stays out of the notification body the user reads.
+    log.info(
+        "mfl-fantasy-manager %s (commit %s, dry_run=%s, writes=%s)",
+        __version__,
+        _git_commit() or "unknown",
+        settings.dry_run,
+        "on" if settings.writes_allowed else "off",
+    )
     try:
         snap = await load_snapshot(client, week=week)
         result.say(f"League: {snap.league.name or settings.league_id} (week {snap.week})")

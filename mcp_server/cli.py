@@ -24,6 +24,7 @@ import logging
 import sys
 from dataclasses import replace
 
+from . import __version__
 from .config import ConfigError, get_settings
 from .context import load_snapshot
 from .mfl_api import MFLError, MFLClient
@@ -34,6 +35,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mfl",
         description="MyFantasyLeague fantasy manager (read-only by default)",
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"mfl-fantasy-manager {__version__}"
     )
     parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     parser.add_argument("--log-level", default=None, help="DEBUG/INFO/WARNING/ERROR")

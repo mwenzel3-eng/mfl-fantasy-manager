@@ -95,6 +95,14 @@ def _lineup_from_status(starters: Sequence[RosterPlayer], snap: Snapshot) -> Lin
     )
 
 
+def _chunks(items, size):
+    """Split a list into fixed-size chunks, dropping any trailing partial."""
+    for i in range(0, len(items), size):
+        chunk = items[i : i + size]
+        if chunk:
+            yield chunk
+
+
 async def load_snapshot(
     client: MFLClient,
     *,
@@ -112,11 +120,23 @@ async def load_snapshot(
     roster_ids = [r.player_id for r in roster]
 
     players = await client.players()
-    projected = await _safe(client.projected_scores(week=target_week, players=roster_ids))
+    # Free agents first: their projections are needed too, and fetching only
+    # rostered players would leave every free agent projecting at zero, which
+    # makes them all look worthless.
+    free_agents = await _safe(client.free_agents(), default=[])
+
+    projected = await _safe(
+        client.projected_scores(week=target_week, players=roster_ids)
+    )
+    # MFL's projection endpoint accepts a few hundred ids; chunk so a large
+    # free-agent pool does not get rejected as an over-long request.
+    for chunk in _chunks(list(free_agents)[:free_agent_limit], 200):
+        extra = await _safe(client.projected_scores(week=target_week, players=chunk))
+        projected = {**projected, **(extra or {})}
+
     wsis = await _safe(client.who_should_i_start(week=target_week))
     injuries_raw = await _safe(client.injuries(target_week))
     bye_map = await _safe(client.bye_weeks(target_week))
-    free_agents = await _safe(client.free_agents(), default=[])
 
     pool = build_pool(players, week=target_week, projected=projected, wsis=wsis)
     report = build_report(roster, injuries_raw, week=target_week, bye_map=bye_map)

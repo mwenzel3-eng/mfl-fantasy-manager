@@ -74,6 +74,14 @@ log = logging.getLogger(__name__)
 __all__ = ["MFLClient", "MFLError", "WritesDisabledError"]
 
 
+# Export types that must NOT carry a league id. MFL rejects these outright when
+# L is present, returning a message about going to api.myfantasyleague.com that
+# reads like a host problem but is really a parameter one. Each entry was
+# verified against the live API by sending the request both ways.
+# Note that `players` and `projectedScores` are deliberately absent: they accept
+# L, and projectedScores/whoShouldIStart *require* it.
+_GLOBAL_EXPORTS = frozenset({"injuries", "nflByeWeeks", "myleagues", "playerRanks"})
+
 class MFLClient:
     """Thin, well-behaved wrapper over the MFL export/import API.
 
@@ -95,6 +103,9 @@ class MFLClient:
         self._logged_in = False
         self._last_request = 0.0
         self._resolved_host: str | None = self.settings.host
+        # Set once MFL throttles us, so the rest of the run stops making
+        # requests instead of walking into a heavier throttle.
+        self._throttled_at: float | None = None
         self._sleep = asyncio.sleep
         self._monotonic = time.monotonic
 
@@ -134,7 +145,12 @@ class MFLClient:
 
     # -- low level ---------------------------------------------------------
 
-    def _base_url(self, command: str) -> str:
+    def _base_url(self, command: str, *, api_host: bool = False) -> str:
+        if api_host:
+            # Global feeds must be served by the api host, not the league's.
+            # MFL also spreads load across servers here, which helps the
+            # per-server rate limits.
+            return f"https://{API_HOST}/{self.settings.year}/{command}"
         host = self._resolved_host or self.settings.host
         if not host:
             # No league host resolved yet: the non-league host handles the
@@ -194,7 +210,17 @@ class MFLClient:
         *,
         cookie_ok: bool = True,
         require_cookie: bool = False,
+        api_host: bool = False,
     ) -> dict[str, Any]:
+        if self._throttled_at is not None:
+            # MFL states plainly that retrying a throttled request makes the
+            # situation worse, and that the correct response is to cool down.
+            # Optional feeds degrade silently, so without this a run would keep
+            # firing requests into a closed door and could be penalised for it.
+            raise MFLError(
+                "Skipped: MFL rate-limited this run (HTTP 429) and further "
+                "requests would worsen it. Wait before trying again."
+            )
         if cookie_ok:
             await self._ensure_authenticated(required=require_cookie)
 
@@ -206,7 +232,7 @@ class MFLClient:
 
         cookie = self._cookie
         query = self._auth(query, cookie_ok=cookie_ok)
-        url = self._base_url(command)
+        url = self._base_url(command, api_host=api_host)
         sendable = {k: v for k, v in query.items() if not k.startswith("_")}
 
         await self._throttle()
@@ -220,6 +246,7 @@ class MFLClient:
             raise MFLError(f"Request to {url} failed: {exc}") from exc
 
         if response.status_code == 429:
+            self._throttled_at = time.monotonic()
             # MFL explicitly says: do not retry, cool down.
             raise MFLError(
                 "MFL rate limit hit (HTTP 429). Increase MFL_REQUEST_DELAY and retry later."
@@ -241,8 +268,19 @@ class MFLClient:
         return payload if isinstance(payload, dict) else {"response": payload}
 
     async def export(self, request_type: str, **params: Any) -> dict[str, Any]:
-        """Call ``export?TYPE=<request_type>``."""
+        """Call ``export?TYPE=<request_type>``.
+
+        The league id is added automatically because nearly every export is
+        league-scoped, but a few are global and MFL *rejects* the request if
+        they carry one. Verified against the live API: ``injuries`` and
+        ``nflByeWeeks`` fail with "This API request must go to api..." when
+        ``L`` is present, so they are listed here and left unsuffixed.
+        """
         self.settings.require_read()
+        if request_type in _GLOBAL_EXPORTS:
+            return await self._send(
+                "export", {"TYPE": request_type, **params}, api_host=True
+            )
         params.setdefault("L", self.settings.league_id)
         return await self._send("export", {"TYPE": request_type, **params})
 
@@ -340,12 +378,19 @@ class MFLClient:
 
         host = as_str(league.get("host"))
         if not host:
-            # Observed in the wild: MFL returns the league, including its name,
-            # but omits 'host' from the JSON export. Since the host is only a
-            # performance hint, degrade to the api host rather than failing.
+            # MFL moved this attribute: the JSON export now carries the league's
+            # server as a full 'baseURL' and no longer returns 'host'. Both
+            # forms are accepted so either shape resolves.
+            base = as_str(league.get("baseURL"))
+            if base:
+                host = base
+        if not host:
+            # Neither form present. The host is only a performance hint, since
+            # the api host serves league requests too and redirects, so degrade
+            # rather than failing.
             log.info(
-                "League %r (L=%s) returned no host; using %s instead. League "
-                "requests will redirect, which is slower but correct.",
+                "League %r (L=%s) returned no host or baseURL; using %s instead. "
+                "League requests will redirect, which is slower but correct.",
                 as_str(league.get("name")) or "unnamed",
                 self.settings.league_id,
                 API_HOST,
@@ -354,6 +399,7 @@ class MFLClient:
             self._resolved_host = API_HOST
             return API_HOST
 
+        # _base_url strips the scheme, so a full baseURL is fine here.
         self._resolved_host = host.lower()
         return self._resolved_host
 
@@ -365,7 +411,12 @@ class MFLClient:
         omits one.
         """
         payload = await self._send("export", {"TYPE": "myleagues"})
-        return as_list(payload.get("myleagues", {}).get("league"))
+        # The response key is 'leagues'; the TYPE is 'myleagues'.
+        for key in ("leagues", "myleagues"):
+            block = payload.get(key)
+            if isinstance(block, dict) and block.get("league") is not None:
+                return as_list(block.get("league"))
+        return []
 
     # -- read: reference data ---------------------------------------------
 
@@ -460,11 +511,31 @@ class MFLClient:
                 return norm_franchise_id(candidate)
 
         payload = await self.export("abilities")
-        fid = as_str(payload.get("abilities", {}).get("franchise_id"))
+        abilities = payload.get("abilities", {})
+        # MFL documents this as a flat 'franchise_id', but the live API nests it
+        # as abilities.franchise.id. Accept both so either shape resolves.
+        fid = as_str(abilities.get("franchise_id")) or as_str(
+            (abilities.get("franchise") or {}).get("id")
+        )
         if fid:
             return norm_franchise_id(fid)
+
+        # Last resort: the league lists every franchise, and the commissioner
+        # field names the owners. This only helps for commissioners.
+        commish = {
+            name.strip().lower()
+            for name in as_str(raw.get("commish_username")).split(",")
+            if name.strip()
+        }
+        if commish:
+            for fr in as_list(raw.get("franchises", {}).get("franchise")):
+                owner = as_str(fr.get("owner_name")) or as_str(fr.get("username"))
+                if owner.lower() in commish and as_str(fr.get("id")):
+                    return norm_franchise_id(fr["id"])
+
         raise MFLError(
-            "Could not determine your franchise id. Set MFL_FRANCHISE_ID explicitly."
+            "Could not determine your franchise id. Set MFL_FRANCHISE_ID explicitly "
+            f"to the number shown in your MFL team URL for L={self.settings.league_id}."
         )
 
     async def my_franchise(self) -> dict[str, Any]:
@@ -521,13 +592,29 @@ class MFLClient:
         return players
 
     async def free_agents(self) -> list[str]:
-        """Player ids currently available as free agents in this league."""
+        """Player ids currently available as free agents in this league.
+
+        MFL's JSON uses the camelCase key ``freeAgents`` for this export, which
+        is an easy thing to miss and fails silently as an empty pool. The
+        snake_case spelling is accepted too, and ``players?STATUS=freeagent``
+        is used as a fallback so a rename cannot silently return zero.
+        """
         self.settings.require_read()
         payload = await self.export("freeAgents")
-        ids = [
-            norm_player_id(p.get("id"))
-            for p in as_list(payload.get("free_agents", {}).get("player"))
-        ]
+        players = None
+        for key in ("freeAgents", "free_agents"):
+            block = payload.get(key)
+            if isinstance(block, dict) and block.get("player") is not None:
+                players = as_list(block.get("player"))
+                break
+
+        if not players:
+            # Independent path to the same answer, so an empty result is a real
+            # absence of free agents rather than a response we failed to read.
+            listed = await self.export("players", STATUS="freeagent")
+            players = as_list(listed.get("players", {}).get("player"))
+
+        ids = [norm_player_id(p.get("id")) for p in players]
         return [pid for pid in ids if pid]
 
     async def injuries(self, week: int | None = None) -> dict[str, Any]:
