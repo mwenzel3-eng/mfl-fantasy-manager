@@ -475,3 +475,51 @@ async def test_nearest_miss_reports_the_closest_swap(settings: Settings):
     assert moves == []
     assert "Closest call" in text
     assert "threshold" in text
+
+
+# -- an empty roster must not masquerade as "nothing to do" ----------------
+
+
+async def test_job_fails_and_reports_size_on_an_empty_roster(settings, monkeypatch):
+    """An empty roster must fail loudly, not report 'nothing to do'."""
+    import jobs._common as common
+    from jobs.wednesday_waivers import body
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("TYPE") == "rosters":
+            data = make_handler()(request).json()
+            for fr in data.get("rosters", {}).get("franchise", []):
+                fr["roster"] = {"player": []}
+            return httpx.Response(200, json=data)
+        return make_handler()(request)
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    def fake_client(_settings):
+        return MFLClient(_settings, client=http)
+
+    monkeypatch.setattr(common, "MFLClient", fake_client)
+    result = await common.run_job("wednesday-waivers", body, settings=settings)
+
+    text = "\n".join(result.lines)
+    assert "Roster: 0 players" in text
+    assert result.error is not None
+    assert result.exit_code() == 1
+
+
+async def test_job_reports_a_healthy_roster_size(settings, monkeypatch):
+    from jobs.wednesday_waivers import body
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(make_handler()))
+
+    def fake_client(_settings):
+        return MFLClient(_settings, client=http)
+
+    import jobs._common as common
+    monkeypatch.setattr(common, "MFLClient", fake_client)
+    result = await common.run_job("wednesday-waivers", body, settings=settings)
+
+    text = "\n".join(result.lines)
+    assert result.error is None
+    assert "Roster: " in text
+    assert "players" in text

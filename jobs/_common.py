@@ -126,11 +126,26 @@ async def run_job(
     try:
         snap = await load_snapshot(client, week=week)
         result.say(f"League: {snap.league.name or settings.league_id} (week {snap.week})")
-        if settings.writes_allowed:
+        # Always report the roster size. Every job reasons about your own team,
+        # and a run that analysed an empty roster reports "nothing to do" just
+        # as confidently as one that worked - which is how an empty roster can
+        # hide behind a green tick for weeks.
+        result.say(f"Roster: {len(snap.roster)} players")
+        if not snap.roster:
+            result.error = (
+                "Your franchise returned no players, so there is nothing to "
+                "analyse. Check that MFL_LEAGUE_ID points at the league you mean "
+                "and that the account can see your roster."
+            )
+        elif settings.writes_allowed:
             result.say("Write access: ENABLED")
         else:
             result.say("Write access: disabled (report only)")
-        await body(client, snap, result)
+        # With no roster there is nothing for the body to reason about, and
+        # running it anyway would overwrite the reason above with a generic
+        # "nothing to do".
+        if not result.error:
+            await body(client, snap, result)
     except Exception as exc:  # noqa: BLE001 - job boundary
         result.error = str(exc)
         log.exception("Job %s failed", name)
