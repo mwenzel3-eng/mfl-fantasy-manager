@@ -523,3 +523,75 @@ async def test_job_reports_a_healthy_roster_size(settings, monkeypatch):
     assert result.error is None
     assert "Roster: " in text
     assert "players" in text
+
+
+def test_explain_omits_a_defaulted_consensus_number(settings: Settings):
+    """Printing 'wsis 50' implies MFL supplied 50% when it supplied nothing."""
+    from mcp_server.fantasy_engine import build_pool, explain
+    from mcp_server.models import Player
+
+    players = [Player(player_id="0001", name="A", position="QB")]
+    without = build_pool(players, week=1, projected={"0001": 9.0}, wsis={})
+    assert "wsis" not in explain(without.value("0001"))
+
+    with_consensus = build_pool(players, week=1, projected={"0001": 9.0}, wsis={"0001": 72.0})
+    assert "wsis 72" in explain(with_consensus.value("0001"))
+
+
+def test_a_defaulted_consensus_does_not_change_rankings(settings: Settings):
+    """50.0 is the neutral value, so it must not shift any ordering."""
+    from mcp_server.fantasy_engine import build_pool
+    from mcp_server.models import Player
+
+    players = [
+        Player(player_id="0001", name="A", position="QB"),
+        Player(player_id="0002", name="B", position="QB"),
+    ]
+    plain = build_pool(players, week=1, projected={"0001": 9.0, "0002": 4.0}, wsis={})
+    ranked = build_pool(
+        players, week=1, projected={"0001": 9.0, "0002": 4.0}, wsis={"0001": 50.0, "0002": 50.0}
+    )
+    assert plain.value("0001").adjusted == pytest.approx(ranked.value("0001").adjusted)
+    assert plain.value("0002").adjusted == pytest.approx(ranked.value("0002").adjusted)
+
+
+async def test_only_the_best_add_per_drop_target_is_reported(settings: Settings):
+    """Four adds that all drop the same player are one move, not four."""
+    from mcp_server.waivers import recommend_moves
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(make_handler()))
+    async with MFLClient(settings, client=http) as client:
+        snap = await load_snapshot(client, week=3)
+
+    moves = recommend_moves(snap.roster, snap.free_agent_values(60), snap.pool, snap.league, limit=8)
+    drop_ids = [m.drop.player_id for m in moves]
+    assert len(drop_ids) == len(set(drop_ids)), "a player cannot be dropped twice"
+
+
+async def test_the_kept_move_is_the_best_for_its_drop_target(settings: Settings):
+    from mcp_server.waivers import recommend_moves
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(make_handler()))
+    async with MFLClient(settings, client=http) as client:
+        snap = await load_snapshot(client, week=3)
+
+    candidates = snap.free_agent_values(60)
+    moves = recommend_moves(snap.roster, candidates, snap.pool, snap.league, limit=8)
+    for move in moves:
+        same_drop = [m for m in moves if m.drop.player_id == move.drop.player_id]
+        assert move.net_gain == max(m.net_gain for m in same_drop)
+
+
+async def test_limit_counts_distinct_moves(settings: Settings):
+    """The limit applies after de-duplication, not before."""
+    from mcp_server.waivers import recommend_moves
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(make_handler()))
+    async with MFLClient(settings, client=http) as client:
+        snap = await load_snapshot(client, week=3)
+
+    candidates = snap.free_agent_values(60)
+    for limit in (1, 2, 3, 5):
+        moves = recommend_moves(snap.roster, candidates, snap.pool, snap.league, limit=limit)
+        assert len(moves) <= limit
+        assert len({m.drop.player_id for m in moves}) == len(moves)

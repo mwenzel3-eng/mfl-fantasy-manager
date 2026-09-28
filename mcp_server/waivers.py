@@ -152,10 +152,20 @@ def recommend_moves(
                 drop_projected=drop_projected,
             )
         )
-        if len(moves) >= limit:
-            break
+        # Not truncated here: capping before the de-duplication below could
+        # return fewer distinct moves than requested, since several candidates
+        # commonly resolve to one drop target.
 
-    return sorted(moves, key=lambda m: -m.net_gain)
+    # You can only drop each player once, so several adds that all resolve to
+    # the same drop target are not several moves - they are one move with
+    # alternative adds. Reporting them as a ranked list of independent options
+    # padded the report with near-duplicates: four team-defense adds all
+    # "replacing Rams, Los Angeles" looked like four findings and were one.
+    best_per_drop: dict[str, WaiverMove] = {}
+    for move in sorted(moves, key=lambda m: -m.net_gain):
+        best_per_drop.setdefault(move.drop.player_id, move)
+
+    return sorted(best_per_drop.values(), key=lambda m: -m.net_gain)[:limit]
 
 
 def nearest_miss(

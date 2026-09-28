@@ -49,6 +49,10 @@ class PlayerValue:
     available: bool
     note: str = ""
     projection_rank: int = 0
+    # False when ``wsis`` is the 50.0 neutral default rather than a figure MFL
+    # supplied, so reports can say "no consensus data" instead of printing a
+    # confident-looking 50.
+    has_consensus: bool = False
 
     @property
     def player_id(self) -> str:
@@ -142,6 +146,7 @@ def build_pool(
             projected=projected.get(pid, 0.0),
             wsis=wsis.get(pid, 50.0),
             available=p.injury_status not in OUT_STATUSES,
+            has_consensus=pid in wsis,
         )
         for pid, p in pool.players.items()
     }
@@ -156,6 +161,7 @@ def build_pool(
             wsis=v.wsis,
             available=v.available,
             projection_rank=ranks.get(pid, 0),
+            has_consensus=v.has_consensus,
         )
         for pid, v in provisional.items()
     }
@@ -227,8 +233,13 @@ def explain(value: PlayerValue) -> str:
     """A one-line, human-readable justification for a decision."""
     parts = [
         f"proj {value.projected:.1f}",
-        f"wsis {value.wsis:.0f}",
     ]
+    # Only claim a consensus number when MFL actually supplied one. A defaulted
+    # 50 contributes nothing to ``adjusted`` so ranking is unaffected, but
+    # printing "wsis 50" reads as a real 50% win probability from MFL, and in
+    # leagues with no consensus feed that is every single player.
+    if value.has_consensus:
+        parts.append(f"wsis {value.wsis:.0f}")
     avail = value.availability_note
     if avail != "Available":
         parts.append(avail.lower())
