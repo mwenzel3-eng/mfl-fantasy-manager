@@ -19,6 +19,9 @@ import pytest
 import httpx
 
 from mcp_server.config import Settings
+from mcp_server.mfl_api import MFLClient
+
+from .conftest import load
 from mcp_server.mfl_api import _GLOBAL_EXPORTS, MFLClient
 
 from .test_auth import Recorder
@@ -521,3 +524,91 @@ def test_impossible_lineup_error_names_the_players_and_the_fix():
     assert "No healthy player available for the RB slot" in msg
     assert "waiver" in msg.lower()
     assert "Hurt [IR]" in msg and "Healthy" in msg
+
+
+class _FlexLeagueRecorder:
+    """Serves a league whose flex ranges disagree with starters.count.
+
+    This is the exact payload that made ``_starter_slots`` log a warning, and
+    the warning referenced a module-level ``logger`` that did not exist. The
+    whole module imported cleanly and 190 tests passed while that line could
+    only ever raise NameError, because no test ever built a flex league.
+    """
+
+    def __init__(self, league: dict) -> None:
+        self.league = league
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/login"):
+            return httpx.Response(
+                200, text='<status cookie_name="MFL_USER_ID" '
+                'cookie_value="dXNlcjpwYXNzd29yZA==" >MFL</status>'
+            )
+        if request.url.path.endswith("/mfl_status.json"):
+            return httpx.Response(200, json=load("mfl_status.json"))
+        if request.url.params.get("TYPE") == "league":
+            return httpx.Response(200, json={"league": self.league})
+        return httpx.Response(200, json=load("rosters.json"))
+
+    def client(self, settings: Settings) -> MFLClient:
+        http = httpx.AsyncClient(transport=httpx.MockTransport(self))
+        return MFLClient(settings, client=http)
+
+
+def _flex_league() -> dict:
+    return {
+        "name": "Black & Gold Fantasy Football League",
+        "seasonYear": "2026",
+        "baseURL": "https://www42.myfantasyleague.com",
+        "starters": REAL_FLEX_STARTERS,
+        "injuredReserve": "2",
+        "taxiSquad": "0",
+        "rosterLimits": {"position": [{"limit": "0-0", "name": "QB"}]},
+        "endWeek": "17",
+        "franchises": {"franchise": [{"id": "0001", "name": "Team"}]},
+    }
+
+
+async def test_flex_league_mismatch_logs_instead_of_raising(settings: Settings):
+    """The warning path must run. It used to NameError on `logger`."""
+    from dataclasses import replace as _replace
+
+    league = _flex_league()
+    rec = _FlexLeagueRecorder(league)
+    async with rec.client(_replace(settings, apikey="TESTAPIKEY")) as client:
+        parsed = await client.league_settings()
+
+    assert parsed.final_week == 17
+    assert parsed.ir_slots == 2
+    assert len(parsed.starter_slots) == 7
+
+
+async def test_a_flat_starters_string_still_works(settings: Settings):
+    """Non-flex leagues send a flat string; that path must not regress."""
+    from dataclasses import replace as _replace
+
+    league = _flex_league()
+    league["starters"] = "QB,1,RB,2,WR,3,FLX,1"
+    rec = _FlexLeagueRecorder(league)
+    async with rec.client(_replace(settings, apikey="TESTAPIKEY")) as client:
+        parsed = await client.league_settings()
+
+    assert [pos for _l, pos in parsed.starter_slots] == [
+        "QB", "RB", "RB", "WR", "WR", "WR", "FLX",
+    ]
+
+
+async def test_override_wins_over_the_flex_ranges(settings: Settings):
+    from dataclasses import replace as _replace
+
+    rec = _FlexLeagueRecorder(_flex_league())
+    cfg = _replace(
+        settings, apikey="TESTAPIKEY",
+        starter_override="QB,1,RB,3,WR,3,TE,1,PK,1,DEF,1",
+    )
+    async with rec.client(cfg) as client:
+        parsed = await client.league_settings()
+
+    assert [pos for _l, pos in parsed.starter_slots] == [
+        "QB", "RB", "RB", "RB", "WR", "WR", "WR", "TE", "PK", "DEF",
+    ]

@@ -84,6 +84,8 @@ __all__ = ["MFLClient", "MFLError", "WritesDisabledError"]
 # L, and projectedScores/whoShouldIStart *require* it.
 _GLOBAL_EXPORTS = frozenset({"injuries", "nflByeWeeks", "myleagues", "playerRanks"})
 
+logger = logging.getLogger(__name__)
+
 def _key_any(payload: Mapping[str, Any], *levels: tuple[str, ...]) -> list[dict[str, Any]]:
     """Walk nested key levels, trying each spelling offered at that level.
 
@@ -1064,13 +1066,27 @@ def _counts(pairs: Iterable[tuple[str, str]]) -> dict[str, int]:
     return out
 
 
+def _nested(raw: Mapping[str, Any], key: str) -> int:
+    """Read ``key`` from a nested ``franchise`` object, if the export has one."""
+    franchise = raw.get("franchise")
+    if isinstance(franchise, list) and franchise:
+        franchise = franchise[0]
+    if isinstance(franchise, Mapping):
+        return as_int(franchise.get(key))
+    return 0
+
+
 def _ir_slots(raw: Mapping[str, Any]) -> int:
-    """IR slot count lives at the top level as ``injuredReserve``."""
+    """IR slot count is top-level ``injuredReserve``.
+
+    Some exports instead nest it under a ``franchise`` object as ``ir``, so that
+    is kept as a fallback rather than dropped.
+    """
     for key in ("injuredReserve", "ir"):
         value = raw.get(key)
         if value:
             return as_int(value)
-    return 0
+    return _nested(raw, "ir")
 
 
 def _roster_limits(raw: Mapping[str, Any]) -> Any:
@@ -1082,12 +1098,12 @@ def _roster_limits(raw: Mapping[str, Any]) -> Any:
 
 
 def _taxi_slots(raw: Mapping[str, Any]) -> int:
-    """Taxi squad size lives at the top level as ``taxiSquad``."""
+    """Taxi squad size is top-level ``taxiSquad``, else nested ``taxi_squad``."""
     for key in ("taxiSquad", "taxi_squad"):
         value = raw.get(key)
         if value:
             return as_int(value)
-    return 0
+    return _nested(raw, "taxi_squad")
 
 
 def _injury_by_player(report: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
