@@ -154,8 +154,10 @@ def optimize_lineup(
             else:
                 notes_hint = position
             raise LineupError(
-                f"No eligible player available for the {notes_hint} slot "
-                f"(roster has {_positions(available, used)})"
+                f"No healthy player available for the {notes_hint} slot. "
+                f"Run a waiver report before setting the lineup. "
+                f"Rostered {notes_hint}s: {_named(roster, position)}. "
+                f"Remaining healthy: {_positions(available, used)}"
             )
         used.add(pid)
         starters.append(Starter(slot=slot, position=position, value=values[pid]))
@@ -201,9 +203,10 @@ def _pick_for_slot(
             if pid not in used and entry.position in flex_positions
         ]
     else:
+        allowed = {p.strip() for p in position.upper().split("+") if p.strip()}
         candidates = [
             pid for pid, entry in available.items()
-            if pid not in used and entry.position == position.upper()
+            if pid not in used and entry.position in allowed
         ]
     if not candidates:
         return None
@@ -258,7 +261,25 @@ def _improve(
 def _can_fill(position: str, slot: str, flex_positions: frozenset[str]) -> bool:
     if slot.upper().startswith("FLX"):
         return position in flex_positions
-    return position == slot.upper()
+    return position in {p.strip() for p in slot.upper().split("+") if p.strip()}
+
+
+def _named(roster: Sequence[RosterPlayer], position: str) -> str:
+    """The rostered players at ``position``, flagged if unavailable."""
+    rows = [e for e in roster if e.position.upper() == position.upper()]
+    if not rows:
+        return "none"
+    out = []
+    for e in sorted(rows, key=lambda r: r.player.name):
+        tag = ""
+        if e.is_taxi:
+            tag = " [taxi]"
+        elif e.is_ir:
+            tag = " [IR]"
+        elif e.player.is_out:
+            tag = f" [{e.player.injury_status}]"
+        out.append(f"{e.player.name}{tag}")
+    return ", ".join(out)
 
 
 def _positions(available: dict[str, RosterPlayer], used: set[str]) -> str:

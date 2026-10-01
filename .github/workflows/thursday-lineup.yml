@@ -55,6 +55,8 @@ jobs:
           # Unset vars resolve to empty strings, so the log level is pinned
           # here rather than left to the default.
           MFL_LOG_LEVEL: ${{ vars.MFL_LOG_LEVEL || 'INFO' }}
+        # Flex leagues need an explicit lineup; MFL's slot ranges are not counts.
+          MFL_STARTERS: ${{ vars.MFL_STARTERS || '' }}
           SMS_PROVIDER: ${{ vars.SMS_PROVIDER }}
           TWILIO_SID: ${{ secrets.TWILIO_SID }}
           TWILIO_TOKEN: ${{ secrets.TWILIO_TOKEN }}

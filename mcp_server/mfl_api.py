@@ -65,6 +65,7 @@ from .models import (
     as_list,
     as_str,
     franchise_id as norm_franchise_id,
+    parse_mfl_starters,
     parse_slot_spec,
     player_id as norm_player_id,
     players_index,
@@ -508,25 +509,52 @@ class MFLClient:
         payload = await self.export("rules")
         return payload.get("rules", {})
 
+    def _starter_slots(self, raw: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+        """Resolve starter slots, preferring an explicit override.
+
+        ``starters.position[].limit`` is a pick range. In flex leagues those
+        ranges describe which draft picks a position may occupy, not how many
+        slots it holds, so they routinely sum to less than ``starters.count``.
+        When that happens the ranges cannot be trusted to describe the lineup,
+        so an explicit ``MFL_STARTERS`` spec wins and a mismatch is logged
+        rather than silently producing a short lineup.
+        """
+        structured = raw.get("starters")
+        override = getattr(self.settings, "starter_override", None)
+        if override:
+            slots = parse_slot_spec(override)
+            if slots:
+                return slots
+        slots = parse_mfl_starters(structured)
+        declared = as_int(structured.get("count")) if isinstance(structured, Mapping) else 0
+        if declared and len(slots) != declared:
+            logger.warning(
+                "League starter ranges describe %d slots but starters.count is %d; "
+                "flex ranges are not slot counts. Set MFL_STARTERS to the intended "
+                "lineup, e.g. 'QB,1,RB,3,WR,3,TE,1,PK,1,DEF,1'.",
+                len(slots), declared,
+            )
+        return slots
+
     async def league_settings(self) -> LeagueSettings:
         """League configuration, including the lineup slot definitions."""
         raw = await self.league()
         await self.ensure_league_host()
         franchises = as_list(raw.get("franchises", {}).get("franchise"))
+        starters = self._starter_slots(raw)
         return LeagueSettings(
             name=as_str(raw.get("name")),
             season=as_str(raw.get("seasonYear")),
-            host=as_str(raw.get("host"), API_HOST),
+            host=as_str(raw.get("host") or raw.get("baseURL"), API_HOST),
             roster_positions=_counts(parse_slot_spec(as_str(raw.get("roster_positions")))),
-            starter_slots=parse_slot_spec(as_str(raw.get("starters"))),
-            roster_limits=_counts(parse_slot_spec(as_str(raw.get("roster_limits")))),
-            ir_slots=as_int(raw.get("franchise", {}).get("ir", 0))
-            or _ir_slots(raw),
+            starter_slots=starters,
+            roster_limits=_counts(_roster_limits(raw)),
+            ir_slots=_ir_slots(raw),
             taxi_slots=_taxi_slots(raw),
             divisions=bool(raw.get("divisions")),
             current_week=as_int(raw.get("currentWeek")),
             last_week=as_int(raw.get("lastWeek")),
-            final_week=as_int(raw.get("finalWeek")),
+            final_week=as_int(raw.get("endWeek") or raw.get("finalWeek")),
             franchise_count=len(franchises),
         )
 
@@ -1037,20 +1065,28 @@ def _counts(pairs: Iterable[tuple[str, str]]) -> dict[str, int]:
 
 
 def _ir_slots(raw: Mapping[str, Any]) -> int:
-    franchise = raw.get("franchise")
-    if isinstance(franchise, list) and franchise:
-        franchise = franchise[0]
-    if isinstance(franchise, dict):
-        return as_int(franchise.get("ir"))
+    """IR slot count lives at the top level as ``injuredReserve``."""
+    for key in ("injuredReserve", "ir"):
+        value = raw.get(key)
+        if value:
+            return as_int(value)
     return 0
 
 
+def _roster_limits(raw: Mapping[str, Any]) -> Any:
+    """``rosterLimits`` is a structured ``{"position": [...]}`` object."""
+    limits = raw.get("rosterLimits")
+    if isinstance(limits, Mapping) and limits.get("position"):
+        return parse_mfl_starters(limits)
+    return parse_slot_spec(as_str(raw.get("roster_limits")))
+
+
 def _taxi_slots(raw: Mapping[str, Any]) -> int:
-    franchise = raw.get("franchise")
-    if isinstance(franchise, list) and franchise:
-        franchise = franchise[0]
-    if isinstance(franchise, dict):
-        return as_int(franchise.get("taxi_squad"))
+    """Taxi squad size lives at the top level as ``taxiSquad``."""
+    for key in ("taxiSquad", "taxi_squad"):
+        value = raw.get(key)
+        if value:
+            return as_int(value)
     return 0
 
 

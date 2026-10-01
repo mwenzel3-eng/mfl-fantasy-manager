@@ -95,6 +95,11 @@ class Settings:
     cache_dir: Path | None = None
     user_agent: str = DEFAULT_USER_AGENT
     franchise_id: str | None = None
+    # Explicit starter spec ("QB,1,RB,3,WR,3,TE,1,PK,1,DEF,1"). Needed when a
+    # league's ``starters.position`` ranges do not add up to ``starters.count``,
+    # which happens with flex leagues where the ranges describe pick eligibility
+    # rather than slot counts.
+    starter_override: str | None = None
     sms_provider: str = "log"
     twilio_sid: str | None = None
     twilio_token: str | None = field(default=None, repr=False)
@@ -200,6 +205,7 @@ def load_settings(env_file: Path | str | None = None) -> Settings:
         cache_dir=cache_dir,
         user_agent=os.environ.get("MFL_USER_AGENT") or DEFAULT_USER_AGENT,
         franchise_id=(os.environ.get("MFL_FRANCHISE_ID") or "").strip() or None,
+        starter_override=(os.environ.get("MFL_STARTERS") or "").strip() or None,
         sms_provider=(os.environ.get("SMS_PROVIDER") or "log").strip().lower(),
         twilio_sid=os.environ.get("TWILIO_SID") or None,
         twilio_token=os.environ.get("TWILIO_TOKEN") or None,

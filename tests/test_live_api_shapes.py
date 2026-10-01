@@ -15,6 +15,7 @@ person would not have guessed, and each failed silently rather than loudly:
 
 from __future__ import annotations
 
+import pytest
 import httpx
 
 from mcp_server.config import Settings
@@ -411,3 +412,112 @@ def test_player_team_falls_back_to_team():
     from mcp_server.models import Player
 
     assert Player.from_json({"id": "1", "name": "X", "position": "RB", "team": "MIA"}).nfl_team == "MIA"
+
+
+# The exact ``starters`` object this league returns, captured from
+# TYPE=league on 2026-09-29.
+REAL_FLEX_STARTERS = {
+    "position": [
+        {"limit": "1", "name": "QB"},
+        {"name": "RB", "limit": "2-3"},
+        {"limit": "4-5", "name": "WR+TE"},
+        {"name": "PK", "limit": "1"},
+        {"limit": "1", "name": "Def"},
+    ],
+    "count": "10",
+}
+
+
+def test_real_starters_object_is_not_a_flat_string():
+    """MFL sends a structured object; parse_slot_spec() silently yields () on it."""
+    from mcp_server.models import parse_mfl_starters, parse_slot_spec
+
+    assert parse_slot_spec(str(REAL_FLEX_STARTERS)) == ()
+    slots = parse_mfl_starters(REAL_FLEX_STARTERS)
+    assert [pos for _label, pos in slots] == ["QB", "RB", "RB", "WR", "TE", "PK", "DEF"]
+
+
+def test_a_pick_range_is_not_a_slot_count():
+    """"2-3" means two slots; the range bounds are draft picks."""
+    from mcp_server.models import parse_mfl_starters
+
+    assert len(parse_mfl_starters(REAL_FLEX_STARTERS)) == 7
+
+
+def test_flex_ranges_disagree_with_the_declared_count():
+    """This is why an explicit override is required rather than derived."""
+    from mcp_server.models import parse_mfl_starters
+
+    derived = len(parse_mfl_starters(REAL_FLEX_STARTERS))
+    assert derived == 7
+    assert int(REAL_FLEX_STARTERS["count"]) == 10
+
+
+def test_override_wins_over_the_unreliable_ranges():
+    from mcp_server.models import parse_mfl_starters, parse_slot_spec
+
+    spec = "QB,1,RB,3,WR,3,TE,1,PK,1,DEF,1"
+    slots = parse_slot_spec(spec)
+    assert [pos for _l, pos in slots] == [
+        "QB", "RB", "RB", "RB", "WR", "WR", "WR", "TE", "PK", "DEF",
+    ]
+    assert len(slots) == int(REAL_FLEX_STARTERS["count"]) == 10
+    assert len(parse_mfl_starters(REAL_FLEX_STARTERS)) != len(slots)
+
+
+def test_roster_limits_zero_range_means_no_limit():
+    from mcp_server.models import parse_mfl_starters
+
+    assert parse_mfl_starters({"position": [{"limit": "0-0", "name": "QB"}]}) == ()
+
+
+def test_league_top_level_keys_are_camel_case():
+    """injuredReserve/taxiSquad/rosterLimits are top level, not under franchise."""
+    from mcp_server.mfl_api import _ir_slots, _roster_limits, _taxi_slots
+
+    league = {
+        "injuredReserve": "2",
+        "taxiSquad": "0",
+        "rosterLimits": {"position": [{"limit": "0-0", "name": "QB"}]},
+        "endWeek": "17",
+    }
+    assert _ir_slots(league) == 2
+    assert _taxi_slots(league) == 0
+    assert _roster_limits(league) == ()
+
+
+def test_a_combined_slot_can_be_filled_by_either_position():
+    from mcp_server.lineup import _can_fill
+
+    flex = frozenset({"WR", "TE"})
+    assert _can_fill("WR", "WR+TE", flex)
+    assert _can_fill("TE", "WR+TE", flex)
+    assert not _can_fill("QB", "WR+TE", flex)
+
+
+def test_impossible_lineup_error_names_the_players_and_the_fix():
+    """A short roster is not a crash; it must say who is out and what to do."""
+    from mcp_server.models import LeagueSettings, Player, RosterPlayer, parse_slot_spec
+    from mcp_server.lineup import optimize_lineup, LineupError
+    from mcp_server.fantasy_engine import build_pool
+
+    league = LeagueSettings(
+        name="L", season="2026", host="h",
+        starter_slots=parse_slot_spec("QB,1,RB,2,WR,1"),
+    )
+    roster = [
+        RosterPlayer(player=Player(player_id="1", name="Q", position="QB"), status="R"),
+        RosterPlayer(player=Player(player_id="2", name="W", position="WR"), status="R"),
+        RosterPlayer(player=Player(player_id="3", name="Healthy", position="RB"), status="R"),
+        RosterPlayer(
+            player=Player(player_id="4", name="Hurt", position="RB", injury_status="IR"),
+            status="IR",
+        ),
+    ]
+    pool = build_pool([e.player for e in roster], week=4, projected={"1": 1.0, "2": 1.0, "3": 1.0, "4": 1.0})
+    with pytest.raises(LineupError) as exc:
+        optimize_lineup(roster, pool, league, week=4)
+    msg = str(exc.value)
+    assert "No healthy player available for the RB slot" in msg
+    assert "waiver" in msg.lower()
+    assert "Hurt [IR]" in msg and "Healthy" in msg

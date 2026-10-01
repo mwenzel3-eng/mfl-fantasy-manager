@@ -8,6 +8,7 @@ normalise all of that so the rest of the codebase can assume lists.
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
 
@@ -272,6 +273,46 @@ def parse_slot_spec(spec: str) -> tuple[tuple[str, str], ...]:
         except ValueError:
             continue
         out.extend((pos, pos) for _ in range(n))
+    return tuple(out)
+
+
+def parse_mfl_starters(structured: Any) -> tuple[tuple[str, str], ...]:
+    """Parse MFL's structured ``starters`` object into ((label, position), ...).
+
+    MFL does not send starters as a flat ``"QB,1,RB,2"`` string. It sends::
+
+        {"position": [{"name": "QB", "limit": "1"},
+                      {"name": "RB", "limit": "2-3"}], "count": "10"}
+
+    ``limit`` is a pick *range*, not a count, so "2-3" means two slots and "1"
+    means one. A name containing "+" is one slot several positions may fill, so
+    its range is dealt round-robin across the listed positions.
+    """
+    if not isinstance(structured, Mapping):
+        return parse_slot_spec(as_str(structured))
+    out: list[tuple[str, str]] = []
+    for entry in as_list(structured.get("position")):
+        if not isinstance(entry, Mapping):
+            continue
+        raw_name = as_str(entry.get("name")).upper()
+        if not raw_name:
+            continue
+        positions = [p for p in raw_name.split("+") if p]
+        if not positions:
+            continue
+        limit = as_str(entry.get("limit")).strip()
+        if "-" in limit:
+            low, _, high = limit.partition("-")
+            # "2-3" spans picks 2 and 3, so two slots. "0-0" is MFL's
+            # "unlimited/none" sentinel rather than pick zero, so a range
+            # ending at 0 is empty; inclusive counting would wrongly give one.
+            high_n = as_int(high)
+            slots = max(0, high_n - as_int(low) + 1) if high_n > 0 else 0
+        else:
+            slots = max(0, as_int(limit))
+        for i in range(slots):
+            pos = positions[i % len(positions)]
+            out.append((pos if len(positions) == 1 else raw_name, pos))
     return tuple(out)
 
 
